@@ -23,7 +23,7 @@
 =====================================================================
 #>
 
-$script:AppVersion = '2.3.1'
+$script:AppVersion = '2.3.2'
 $script:AppId      = 'FieldTools.NetworkControlCenter'
 
 # ---------------------------------------------------------------------
@@ -254,14 +254,18 @@ $xaml = @'
               </ToggleButton>
               <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom"
                      AllowsTransparency="True" Focusable="False" PopupAnimation="Fade">
-                <Border Background="White" BorderBrush="#D4D7DC" BorderThickness="1" CornerRadius="8" Margin="0,4,10,10"
-                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
-                        MaxHeight="{TemplateBinding MaxDropDownHeight}">
-                  <Border.Effect><DropShadowEffect BlurRadius="12" ShadowDepth="3" Opacity="0.15"/></Border.Effect>
-                  <ScrollViewer Margin="4" VerticalScrollBarVisibility="Auto">
-                    <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
-                  </ScrollViewer>
-                </Border>
+                <!-- Shadow on a separate empty layer, so the list text keeps ClearType (see Tile). -->
+                <Grid Margin="0,4,10,10" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                      MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                  <Border Background="White" CornerRadius="8">
+                    <Border.Effect><DropShadowEffect BlurRadius="12" ShadowDepth="3" Opacity="0.15"/></Border.Effect>
+                  </Border>
+                  <Border Background="White" BorderBrush="#D4D7DC" BorderThickness="1" CornerRadius="8">
+                    <ScrollViewer Margin="4" VerticalScrollBarVisibility="Auto">
+                      <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
+                    </ScrollViewer>
+                  </Border>
+                </Grid>
               </Popup>
             </Grid>
             <ControlTemplate.Triggers>
@@ -341,15 +345,19 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="RadioButton">
-            <Border x:Name="bd" Background="Transparent" CornerRadius="6" Padding="14,7" Margin="2">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
+            <!-- Shadow on a separate empty layer, so the label keeps ClearType (see Tile). -->
+            <Grid Margin="2">
+              <Border x:Name="sh" Background="White" CornerRadius="6" Visibility="Hidden">
+                <Border.Effect><DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.14"/></Border.Effect>
+              </Border>
+              <Border x:Name="bd" Background="Transparent" CornerRadius="6" Padding="14,7">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+            </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="IsChecked" Value="True">
                 <Setter TargetName="bd" Property="Background" Value="White"/>
-                <Setter TargetName="bd" Property="Effect">
-                  <Setter.Value><DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.14"/></Setter.Value>
-                </Setter>
+                <Setter TargetName="sh" Property="Visibility" Value="Visible"/>
                 <Setter Property="FontWeight" Value="SemiBold"/>
                 <Setter Property="Foreground" Value="#0067C0"/>
               </Trigger>
@@ -393,10 +401,16 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="bd" Background="White" BorderBrush="#E1E4E8" BorderThickness="1" CornerRadius="10" Padding="14,12">
-              <Border.Effect><DropShadowEffect BlurRadius="16" ShadowDepth="2" Opacity="0.08"/></Border.Effect>
-              <ContentPresenter/>
-            </Border>
+            <!-- The shadow lives on its own empty layer: a WPF Effect turns everything inside it
+                 into a bitmap without ClearType, which made the tile text look blurry. -->
+            <Grid>
+              <Border Background="White" CornerRadius="10">
+                <Border.Effect><DropShadowEffect BlurRadius="16" ShadowDepth="2" Opacity="0.08"/></Border.Effect>
+              </Border>
+              <Border x:Name="bd" Background="White" BorderBrush="#E1E4E8" BorderThickness="1" CornerRadius="10" Padding="14,12">
+                <ContentPresenter/>
+              </Border>
+            </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
                 <Setter TargetName="bd" Property="BorderBrush" Value="#0067C0"/>
@@ -433,7 +447,7 @@ $xaml = @'
             <Ellipse Width="8" Height="8" Fill="{Binding StatusBrush}" VerticalAlignment="Center"/>
             <TextBlock Text="{Binding StatusText}" Foreground="#5F6368" FontSize="12" Margin="6,0,0,0"/>
           </StackPanel>
-          <TextBlock Text="{Binding IPText}" FontFamily="Consolas" FontSize="12.5" Margin="0,4,0,0"
+          <TextBlock Text="{Binding IPText}" FontFamily="Consolas" FontSize="12" Margin="0,4,0,0"
                      TextTrimming="CharacterEllipsis"/>
         </StackPanel>
         <TextBlock Grid.Column="2" Text="&#xE76C;" FontFamily="{StaticResource Icons}" FontSize="12"
@@ -443,7 +457,7 @@ $xaml = @'
     <!-- Wired tiles plug into the laptop with a cable; wireless ones show radio waves -->
     <DataTemplate x:Key="TileLeft">
       <Grid Margin="0,0,0,12">
-        <Grid.ColumnDefinitions><ColumnDefinition Width="250"/><ColumnDefinition Width="56"/></Grid.ColumnDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="270"/><ColumnDefinition Width="46"/></Grid.ColumnDefinitions>
         <Button Style="{StaticResource Tile}" Content="{Binding}" ContentTemplate="{StaticResource TileBody}" ToolTip="{Binding Tooltip}"/>
         <Grid Grid.Column="1" VerticalAlignment="Center">
           <Border Height="4" CornerRadius="2" Background="{Binding CableBrush}" Margin="0,0,9,0"/>
@@ -453,14 +467,14 @@ $xaml = @'
     </DataTemplate>
     <DataTemplate x:Key="TileRight">
       <Grid Margin="0,0,0,12">
-        <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="250"/></Grid.ColumnDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="46"/><ColumnDefinition Width="270"/></Grid.ColumnDefinitions>
         <TextBlock Text="&#xE701;" FontFamily="{StaticResource Icons}" FontSize="22" Foreground="{Binding CableBrush}"
                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
         <Button Grid.Column="1" Style="{StaticResource Tile}" Content="{Binding}" ContentTemplate="{StaticResource TileBody}" ToolTip="{Binding Tooltip}"/>
       </Grid>
     </DataTemplate>
     <DataTemplate x:Key="TileSmall">
-      <Button Width="250" Margin="0,0,12,12" Style="{StaticResource Tile}" Content="{Binding}"
+      <Button Width="270" Margin="0,0,12,12" Style="{StaticResource Tile}" Content="{Binding}"
               ContentTemplate="{StaticResource TileBody}" ToolTip="{Binding Tooltip}"/>
     </DataTemplate>
 
@@ -631,7 +645,7 @@ $xaml = @'
       </StackPanel>
 
       <!-- The stage scales down on small screens instead of being cut off -->
-      <Viewbox Grid.Row="1" Stretch="Uniform" StretchDirection="DownOnly" Margin="0,6,0,6">
+      <Viewbox x:Name="vbStage" Grid.Row="1" Stretch="Uniform" StretchDirection="DownOnly" Margin="0,6,0,6">
         <Grid>
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="320"/>
@@ -730,12 +744,12 @@ $xaml = @'
           </Grid>
 
           <StackPanel Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="0,0,0,40">
-            <StackPanel Orientation="Horizontal" Margin="58,0,0,10">
+            <StackPanel Orientation="Horizontal" Margin="48,0,0,10">
               <TextBlock Text="&#xE701;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#6B7280" Margin="0,0,6,0"/>
               <TextBlock Text="WIRELESS" Style="{StaticResource Section}"/>
             </StackPanel>
             <ItemsControl x:Name="icWireless" ItemTemplate="{StaticResource TileRight}"/>
-            <TextBlock x:Name="txtNoWireless" Text="No wireless adapters found" Style="{StaticResource Hint}" Margin="58,0,0,0"/>
+            <TextBlock x:Name="txtNoWireless" Text="No wireless adapters found" Style="{StaticResource Hint}" Margin="48,0,0,0"/>
           </StackPanel>
         </Grid>
       </Viewbox>
@@ -1403,7 +1417,7 @@ $controlNames = @(
     'bdIcs','bdIcsPill','elIcsDot','txtIcsPill','txtIcsHint','pnlIcsSetup','cmbIcsFrom','cmbIcsTo','pnlIcsActive',
     'txtIcsFromGlyph','txtIcsFromName','txtIcsToGlyph','txtIcsToName','cmbIcsScope','txtIcsDhcpInfo','chkIcsPersist',
     'bdIcsError','txtIcsError','btnIcsStart','txtIcsStartGlyph','txtIcsStart','btnIcsStop','pnlIcsClients',
-    'btnIcsRefresh','icIcsClients','txtIcsNoClients','svSide',
+    'btnIcsRefresh','icIcsClients','txtIcsNoClients','svSide','vbStage',
     'pnlHome','icWired','txtNoWired','icWireless','txtNoWireless','pnlVirtual','icVirtual',
     'txtHostName','txtOnline','pnlHomeTools','txtPingHome','btnPingHome','btnFlushDns','btnClearArp','btnOpenData',
     'pnlConfig','btnBack','bdAdapterIcon','txtAdapterGlyph','txtAdapterName','bdStatusPill','elStatusDot',
@@ -1807,7 +1821,7 @@ function Get-AdapterInventory([int]$InterfaceIndex = 0) {
             'Disabled' { 'Disabled' }
             default    { if ($kind -eq 'Ethernet') { 'Cable unplugged' } else { 'Not connected' } }
         }
-        $ipText = if ($primary) { "$($primary.IPAddress)/$($primary.PrefixLength)  $(if ($dhcp) { 'DHCP' } else { 'static' })" }
+        $ipText = if ($primary) { "$($primary.IPAddress)/$($primary.PrefixLength) $(if ($dhcp) { 'DHCP' } else { 'static' })" }
                   elseif ($dhcp) { if ($up) { 'DHCP - no address yet' } else { 'DHCP' } }
                   else { 'No IP address' }
 
@@ -3550,6 +3564,16 @@ Initialize-Pickers
 Update-UndoButton
 Enable-SmoothScroll $ctl.svForm
 Enable-SmoothScroll $ctl.svSide
+
+# "Display" text (set on the window) is the sharpest at 1:1, but turns blurry when scaled. The home
+# stage shrinks on small windows, so it switches to "Ideal" text only while it is actually scaled.
+$ctl.vbStage.Add_SizeChanged({
+    $child = $ctl.vbStage.Child
+    if (-not $child -or $child.ActualWidth -le 0) { return }
+    $scaled = ($ctl.vbStage.ActualWidth / $child.ActualWidth) -lt 0.995
+    $mode = if ($scaled) { [System.Windows.Media.TextFormattingMode]::Ideal } else { [System.Windows.Media.TextFormattingMode]::Display }
+    [System.Windows.Media.TextOptions]::SetTextFormattingMode($child, $mode)
+})
 
 # Fit the window into the screen's work area (excludes the taskbar). Laptop screens at 125-175%
 # scaling are often well under 760 px tall, which would otherwise cut the window off.
