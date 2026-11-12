@@ -147,6 +147,7 @@ Windows only (Windows 10/11, Windows PowerShell 5.1 — not pwsh; WPF needs 5.1 
   `*.json`, logs and backups are gitignored because profiles/caches hold real site data.
 - **Identity.** The repo belongs to the GitHub account **cesariluca**; commits are
   `cesariluca <luca.cesari@omniaccess.com>` (work email on purpose - don't switch to a no-reply address).
+  That must be the only email in a commit: no `Co-Authored-By` trailers.
 
 - **The UI thread never calls networking cmdlets** (module import would freeze it for seconds) and
   never does blocking network I/O — go through `Start-WorkJob`. Raw CIM reads belong in the worker
