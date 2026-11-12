@@ -23,7 +23,7 @@
 =====================================================================
 #>
 
-$script:AppVersion = '2.3.2'
+$script:AppVersion = '2.4.0'
 $script:AppId      = 'FieldTools.NetworkControlCenter'
 
 # ---------------------------------------------------------------------
@@ -52,28 +52,51 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 # ---------------------------------------------------------------------
-# 2. ASSEMBLIES & APP IDENTITY
+# 2. ASSEMBLIES, DPI & APP IDENTITY
 # ---------------------------------------------------------------------
+# powershell.exe has no DPI manifest, so Windows treats it as DPI-unaware: on a 125/150% screen it
+# draws the window at 100% and stretches the bitmap, which blurs every glyph. Declare per-monitor
+# (v2) awareness before any window exists, and tell WPF to scale itself per monitor (these switches
+# are off by default for a host like powershell.exe). Text is then rendered natively at each
+# screen's scale, also after the window moves to a monitor with a different scale.
+[AppContext]::SetSwitch('Switch.System.Windows.DoNotScaleForDpiChanges', $false)
+[AppContext]::SetSwitch('Switch.System.Windows.DoNotUsePresentationDpiCapabilityTier2OrGreater', $false)
+[AppContext]::SetSwitch('Switch.System.Windows.DoNotUsePresentationDpiCapabilityTier3OrGreater', $false)
+
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
 $ErrorActionPreference = 'Continue'
 
+# Native calls through a Reflection.Emit P/Invoke stub, because Add-Type would start the C#
+# compiler (~1s) on every launch.
+function New-NativeStub {
+    $asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
+        (New-Object Reflection.AssemblyName 'NccInterop'), [Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $tb = $asm.DefineDynamicModule('NccInterop').DefineType('NccNative', 'Public, Class')
+    $attrs = [Reflection.MethodAttributes]'Public, Static, PinvokeImpl'
+    $m = $tb.DefinePInvokeMethod('SetCurrentProcessExplicitAppUserModelID', 'shell32.dll', $attrs,
+        [Reflection.CallingConventions]::Standard, [int], [Type[]]@([string]),
+        [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Unicode)
+    $m.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+    $m = $tb.DefinePInvokeMethod('SetProcessDpiAwarenessContext', 'user32.dll', $attrs,
+        [Reflection.CallingConventions]::Standard, [bool], [Type[]]@([IntPtr]),
+        [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Auto)
+    $m.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+    return $tb.CreateType()
+}
+try { $script:Native = New-NativeStub } catch { $script:Native = $null }
+
+# -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 (Windows 10 1703+). On older builds the call
+# fails and the window just stays bitmap-scaled, as before.
+if ($script:Native) {
+    try { [void]$script:Native.GetMethod('SetProcessDpiAwarenessContext').Invoke($null, [object[]]@([IntPtr](-4))) } catch { }
+}
+
 # Explicit AppUserModelID = the same ID the installed shortcut carries, so Windows groups this
-# window under the pinned taskbar button instead of showing a generic PowerShell icon. Uses a
-# Reflection.Emit P/Invoke stub because Add-Type would start the C# compiler (~1s) on every launch.
+# window under the pinned taskbar button instead of showing a generic PowerShell icon.
 function Set-AppIdentity([string]$Id) {
-    try {
-        $asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
-            (New-Object Reflection.AssemblyName 'NccInterop'), [Reflection.Emit.AssemblyBuilderAccess]::Run)
-        $tb = $asm.DefineDynamicModule('NccInterop').DefineType('NccNative', 'Public, Class')
-        $m = $tb.DefinePInvokeMethod('SetCurrentProcessExplicitAppUserModelID', 'shell32.dll',
-            [Reflection.MethodAttributes]'Public, Static, PinvokeImpl', [Reflection.CallingConventions]::Standard,
-            [int], [Type[]]@([string]), [Runtime.InteropServices.CallingConvention]::Winapi,
-            [Runtime.InteropServices.CharSet]::Unicode)
-        $m.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
-        $t = $tb.CreateType()
-        [void]$t.GetMethod('SetCurrentProcessExplicitAppUserModelID').Invoke($null, [object[]]@($Id))
-    } catch { }
+    if (-not $script:Native) { return }
+    try { [void]$script:Native.GetMethod('SetCurrentProcessExplicitAppUserModelID').Invoke($null, [object[]]@($Id)) } catch { }
 }
 Set-AppIdentity $script:AppId
 
@@ -88,18 +111,37 @@ $xaml = @'
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="Network Control Center" Height="760" Width="1180"
     MinHeight="560" MinWidth="980" WindowStartupLocation="Manual"
-    Background="#F3F4F6" Foreground="#1B1B1B"
+    Background="#F2F2F7" Foreground="#1D1D1F"
     FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13"
     UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
 
   <Window.Resources>
     <FontFamily x:Key="Icons">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
+    <!-- Optical sizes, like SF Pro Display/Text: the Display cut is drawn tighter for large titles -->
+    <FontFamily x:Key="Display">Segoe UI Variable Display, Segoe UI</FontFamily>
 
-    <!-- ===== Buttons: one template; hover/press is a translucent overlay so it works on any colour ===== -->
+    <!-- ===== Motion =====
+         Press responds at once (80 ms) and settles back with an ease-out (no overshoot); hover fades.
+         Storyboards have no From, so an interrupted animation continues from where it is. -->
+    <CubicEase x:Key="EaseOut" EasingMode="EaseOut"/>
+    <Storyboard x:Key="PressIn">
+      <DoubleAnimation Storyboard.TargetName="root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)" To="0.97" Duration="0:0:0.08" EasingFunction="{StaticResource EaseOut}"/>
+      <DoubleAnimation Storyboard.TargetName="root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)" To="0.97" Duration="0:0:0.08" EasingFunction="{StaticResource EaseOut}"/>
+      <DoubleAnimation Storyboard.TargetName="pv" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.06"/>
+    </Storyboard>
+    <Storyboard x:Key="PressOut">
+      <DoubleAnimation Storyboard.TargetName="root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)" To="1" Duration="0:0:0.3" EasingFunction="{StaticResource EaseOut}"/>
+      <DoubleAnimation Storyboard.TargetName="root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)" To="1" Duration="0:0:0.3" EasingFunction="{StaticResource EaseOut}"/>
+      <DoubleAnimation Storyboard.TargetName="pv" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.25"/>
+    </Storyboard>
+    <Storyboard x:Key="HoverIn"><DoubleAnimation Storyboard.TargetName="ov" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/></Storyboard>
+    <Storyboard x:Key="HoverOut"><DoubleAnimation Storyboard.TargetName="ov" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.25"/></Storyboard>
+
+    <!-- ===== Buttons: one template; hover/press are translucent overlays so it works on any colour ===== -->
     <Style x:Key="Btn" TargetType="Button">
       <Setter Property="Background" Value="White"/>
-      <Setter Property="Foreground" Value="#1B1B1B"/>
-      <Setter Property="BorderBrush" Value="#D4D7DC"/>
+      <Setter Property="Foreground" Value="#1D1D1F"/>
+      <Setter Property="BorderBrush" Value="#D2D2D7"/>
       <Setter Property="BorderThickness" Value="1"/>
       <Setter Property="Padding" Value="14,0"/>
       <Setter Property="Height" Value="34"/>
@@ -108,25 +150,33 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Grid>
+            <Grid x:Name="root" RenderTransformOrigin="0.5,0.5">
+              <Grid.RenderTransform><ScaleTransform/></Grid.RenderTransform>
               <Border x:Name="bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                      BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6"/>
-              <Border x:Name="ov" Background="#000000" Opacity="0" CornerRadius="6"/>
+                      BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8"/>
+              <Border x:Name="ov" Background="#0B000000" Opacity="0" CornerRadius="8"/>
+              <Border x:Name="pv" Background="#14000000" Opacity="0" CornerRadius="8"/>
               <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center"
                                 HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
             </Grid>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ov" Property="Opacity" Value="0.045"/></Trigger>
-              <Trigger Property="IsPressed" Value="True"><Setter TargetName="ov" Property="Opacity" Value="0.09"/></Trigger>
-              <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Trigger.EnterActions><BeginStoryboard Storyboard="{StaticResource HoverIn}"/></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard Storyboard="{StaticResource HoverOut}"/></Trigger.ExitActions>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Trigger.EnterActions><BeginStoryboard Storyboard="{StaticResource PressIn}"/></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard Storyboard="{StaticResource PressOut}"/></Trigger.ExitActions>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
     </Style>
     <Style x:Key="BtnAccent" TargetType="Button" BasedOn="{StaticResource Btn}">
-      <Setter Property="Background" Value="#0067C0"/>
-      <Setter Property="BorderBrush" Value="#005BA9"/>
+      <Setter Property="Background" Value="#0071E3"/>
+      <Setter Property="BorderBrush" Value="#0071E3"/>
       <Setter Property="Foreground" Value="White"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
     </Style>
@@ -140,26 +190,32 @@ $xaml = @'
       <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
 
-    <!-- Big icon-over-label buttons for adapter actions -->
+    <!-- Toolbar-style icon-over-label buttons for adapter actions: no chrome until hovered -->
     <Style x:Key="ActionTile" TargetType="Button">
       <Setter Property="Width" Value="96"/>
       <Setter Property="Height" Value="74"/>
       <Setter Property="Margin" Value="0,0,8,8"/>
       <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Foreground" Value="#1B1B1B"/>
+      <Setter Property="Foreground" Value="#1D1D1F"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="bd" Background="#F6F8FA" BorderBrush="#E3E6EA" BorderThickness="1" CornerRadius="8" Padding="4,8,4,6">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
+            <Grid x:Name="root" RenderTransformOrigin="0.5,0.5">
+              <Grid.RenderTransform><ScaleTransform/></Grid.RenderTransform>
+              <Border x:Name="ov" Background="#E3E3E8" Opacity="0" CornerRadius="10"/>
+              <Border x:Name="pv" Background="#0F000000" Opacity="0" CornerRadius="10"/>
+              <ContentPresenter Margin="4,8,4,6" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="bd" Property="Background" Value="#EEF4FC"/>
-                <Setter TargetName="bd" Property="BorderBrush" Value="#0067C0"/>
+                <Trigger.EnterActions><BeginStoryboard Storyboard="{StaticResource HoverIn}"/></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard Storyboard="{StaticResource HoverOut}"/></Trigger.ExitActions>
               </Trigger>
-              <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Background" Value="#DCE9FA"/></Trigger>
-              <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Trigger.EnterActions><BeginStoryboard Storyboard="{StaticResource PressIn}"/></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard Storyboard="{StaticResource PressOut}"/></Trigger.ExitActions>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.35"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -167,7 +223,7 @@ $xaml = @'
     </Style>
     <Style x:Key="ActionGlyph" TargetType="TextBlock" BasedOn="{StaticResource Glyph}">
       <Setter Property="FontSize" Value="20"/>
-      <Setter Property="Foreground" Value="#0067C0"/>
+      <Setter Property="Foreground" Value="#0071E3"/>
       <Setter Property="HorizontalAlignment" Value="Center"/>
     </Style>
     <Style x:Key="ActionText" TargetType="TextBlock">
@@ -177,32 +233,38 @@ $xaml = @'
       <Setter Property="HorizontalAlignment" Value="Center"/>
     </Style>
 
-    <!-- ===== Text boxes: rounded, accent underline on focus, Tag = placeholder ===== -->
+    <!-- ===== Text boxes: filled, accent border + soft focus ring, Tag = placeholder =====
+         The ring sits outside the field (negative margin), so focusing never shifts the text. -->
     <Style TargetType="TextBox">
       <Setter Property="Height" Value="34"/>
-      <Setter Property="Padding" Value="8,0"/>
+      <Setter Property="Padding" Value="9,0"/>
       <Setter Property="VerticalContentAlignment" Value="Center"/>
-      <Setter Property="Background" Value="White"/>
-      <Setter Property="BorderBrush" Value="#CDD1D6"/>
+      <Setter Property="Background" Value="#F2F2F7"/>
+      <Setter Property="BorderBrush" Value="#F2F2F7"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="TextBox">
-            <Border x:Name="bd" CornerRadius="5" Background="{TemplateBinding Background}"
-                    BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1">
-              <Grid>
-                <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
-                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
-                <TextBlock x:Name="ph" Text="{TemplateBinding Tag}" Foreground="#A0A6AD" FontFamily="Segoe UI" FontSize="12.5"
-                           Margin="{TemplateBinding Padding}" Padding="2,0,0,0" IsHitTestVisible="False" Visibility="Collapsed"
-                           VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
-              </Grid>
-            </Border>
+            <Grid>
+              <Border x:Name="ring" Margin="-3" CornerRadius="11" BorderBrush="#590071E3" BorderThickness="3" Opacity="0"/>
+              <Border x:Name="bd" CornerRadius="8" Background="{TemplateBinding Background}"
+                      BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1">
+                <Grid>
+                  <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                                VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                  <TextBlock x:Name="ph" Text="{TemplateBinding Tag}" Foreground="#A1A1A6" FontFamily="Segoe UI" FontSize="12.5"
+                             Margin="{TemplateBinding Padding}" Padding="2,0,0,0" IsHitTestVisible="False" Visibility="Collapsed"
+                             VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                </Grid>
+              </Border>
+            </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="Text" Value=""><Setter TargetName="ph" Property="Visibility" Value="Visible"/></Trigger>
-              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="BorderBrush" Value="#A9AFB7"/></Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="BorderBrush" Value="#D2D2D7"/></Trigger>
               <Trigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="bd" Property="BorderBrush" Value="#0067C0"/>
-                <Setter TargetName="bd" Property="BorderThickness" Value="1,1,1,2"/>
+                <Setter TargetName="bd" Property="BorderBrush" Value="#0071E3"/>
+                <Setter TargetName="bd" Property="Background" Value="White"/>
+                <Trigger.EnterActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="ring" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.15"/></Storyboard></BeginStoryboard></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="ring" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.2"/></Storyboard></BeginStoryboard></Trigger.ExitActions>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
             </ControlTemplate.Triggers>
@@ -211,18 +273,21 @@ $xaml = @'
       </Setter>
     </Style>
 
-    <!-- ===== Editable combo boxes in the same look, with a rounded drop-down ===== -->
+    <!-- ===== Editable combo boxes in the same look, with a rounded menu ===== -->
     <Style TargetType="ComboBoxItem">
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ComboBoxItem">
-            <Border x:Name="bd" Background="Transparent" CornerRadius="4" Padding="8,6" Margin="0,1">
+            <Border x:Name="bd" Background="Transparent" CornerRadius="6" Padding="9,6" Margin="0,1">
               <ContentPresenter/>
             </Border>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="bd" Property="Background" Value="#EEF4FC"/></Trigger>
-              <Trigger Property="IsSelected" Value="True"><Setter TargetName="bd" Property="Background" Value="#DCE9FA"/></Trigger>
+              <Trigger Property="IsSelected" Value="True"><Setter TargetName="bd" Property="Background" Value="#EAF2FD"/></Trigger>
+              <Trigger Property="IsHighlighted" Value="True">
+                <Setter TargetName="bd" Property="Background" Value="#0071E3"/>
+                <Setter Property="Foreground" Value="White"/>
+              </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -236,7 +301,8 @@ $xaml = @'
         <Setter.Value>
           <ControlTemplate TargetType="ComboBox">
             <Grid>
-              <Border x:Name="bd" CornerRadius="5" Background="White" BorderBrush="#CDD1D6" BorderThickness="1"/>
+              <Border x:Name="ring" Margin="-3" CornerRadius="11" BorderBrush="#590071E3" BorderThickness="3" Opacity="0"/>
+              <Border x:Name="bd" CornerRadius="8" Background="#F2F2F7" BorderBrush="#F2F2F7" BorderThickness="1"/>
               <TextBox x:Name="PART_EditableTextBox" Style="{x:Null}" Margin="1,1,30,1" Padding="8,0,0,0"
                        Background="Transparent" BorderThickness="0" VerticalContentAlignment="Center"
                        FontFamily="{TemplateBinding FontFamily}" FontSize="{TemplateBinding FontSize}"
@@ -247,7 +313,7 @@ $xaml = @'
                   <ControlTemplate TargetType="ToggleButton">
                     <Border Background="Transparent">
                       <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10"
-                                 Foreground="#5F6368" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                 Foreground="#6E6E73" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
                   </ControlTemplate>
                 </ToggleButton.Template>
@@ -255,13 +321,14 @@ $xaml = @'
               <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom"
                      AllowsTransparency="True" Focusable="False" PopupAnimation="Fade">
                 <!-- Shadow on a separate empty layer, so the list text keeps ClearType (see Tile). -->
-                <Grid Margin="0,4,10,10" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                <Grid Margin="0,6,14,14" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
                       MaxHeight="{TemplateBinding MaxDropDownHeight}">
-                  <Border Background="White" CornerRadius="8">
-                    <Border.Effect><DropShadowEffect BlurRadius="12" ShadowDepth="3" Opacity="0.15"/></Border.Effect>
+                  <Border Background="White" CornerRadius="10">
+                    <Border.Effect><DropShadowEffect BlurRadius="20" ShadowDepth="5" Opacity="0.18"/></Border.Effect>
                   </Border>
-                  <Border Background="White" BorderBrush="#D4D7DC" BorderThickness="1" CornerRadius="8">
-                    <ScrollViewer Margin="4" VerticalScrollBarVisibility="Auto">
+                  <!-- A transparent popup turns ClearType off; the list surface is opaque, so turn it back on -->
+                  <Border Background="White" BorderBrush="#1F000000" BorderThickness="0.5" CornerRadius="10" RenderOptions.ClearTypeHint="Enabled">
+                    <ScrollViewer Margin="5" VerticalScrollBarVisibility="Auto">
                       <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
                     </ScrollViewer>
                   </Border>
@@ -269,10 +336,12 @@ $xaml = @'
               </Popup>
             </Grid>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="BorderBrush" Value="#A9AFB7"/></Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="BorderBrush" Value="#D2D2D7"/></Trigger>
               <Trigger Property="IsKeyboardFocusWithin" Value="True">
-                <Setter TargetName="bd" Property="BorderBrush" Value="#0067C0"/>
-                <Setter TargetName="bd" Property="BorderThickness" Value="1,1,1,2"/>
+                <Setter TargetName="bd" Property="BorderBrush" Value="#0071E3"/>
+                <Setter TargetName="bd" Property="Background" Value="White"/>
+                <Trigger.EnterActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="ring" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.15"/></Storyboard></BeginStoryboard></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="ring" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.2"/></Storyboard></BeginStoryboard></Trigger.ExitActions>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
             </ControlTemplate.Triggers>
@@ -283,52 +352,53 @@ $xaml = @'
 
     <!-- ===== Typography & cards ===== -->
     <Style x:Key="Label" TargetType="TextBlock">
-      <Setter Property="Foreground" Value="#3C4043"/>
+      <Setter Property="Foreground" Value="#3A3A3C"/>
       <Setter Property="FontSize" Value="12.5"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
     <Style x:Key="LabelIcon" TargetType="TextBlock" BasedOn="{StaticResource Glyph}">
       <Setter Property="FontSize" Value="13"/>
-      <Setter Property="Foreground" Value="#0067C0"/>
+      <Setter Property="Foreground" Value="#8E8E93"/>
       <Setter Property="Margin" Value="0,0,7,0"/>
     </Style>
     <Style x:Key="FieldHead" TargetType="StackPanel">
       <Setter Property="Orientation" Value="Horizontal"/>
-      <Setter Property="Margin" Value="0,0,0,5"/>
+      <Setter Property="Margin" Value="2,0,0,6"/>
     </Style>
     <Style x:Key="Hint" TargetType="TextBlock">
-      <Setter Property="Foreground" Value="#6B7280"/>
+      <Setter Property="Foreground" Value="#6E6E73"/>
       <Setter Property="FontSize" Value="12"/>
       <Setter Property="TextWrapping" Value="Wrap"/>
     </Style>
     <Style x:Key="Section" TargetType="TextBlock">
-      <Setter Property="Foreground" Value="#6B7280"/>
+      <Setter Property="Foreground" Value="#6E6E73"/>
       <Setter Property="FontSize" Value="11"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
     <Style x:Key="CardTitle" TargetType="TextBlock">
-      <Setter Property="FontSize" Value="15"/>
+      <Setter Property="FontFamily" Value="{StaticResource Display}"/>
+      <Setter Property="FontSize" Value="16"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
+    <!-- Settings-style coloured squares: each card keeps one colour, so it can be found at a glance -->
     <Style x:Key="CardIcon" TargetType="Border">
-      <Setter Property="Width" Value="30"/>
-      <Setter Property="Height" Value="30"/>
-      <Setter Property="CornerRadius" Value="8"/>
-      <Setter Property="Background" Value="#E8F0FE"/>
-      <Setter Property="Margin" Value="0,0,10,0"/>
+      <Setter Property="Width" Value="28"/>
+      <Setter Property="Height" Value="28"/>
+      <Setter Property="CornerRadius" Value="7"/>
+      <Setter Property="Background" Value="#0A84FF"/>
+      <Setter Property="Margin" Value="0,0,11,0"/>
     </Style>
+    <!-- Grouped cards: white on the grey page, no outline or shadow (only things you click float) -->
     <Style x:Key="Card" TargetType="Border">
       <Setter Property="Background" Value="White"/>
-      <Setter Property="BorderBrush" Value="#E3E5E8"/>
-      <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="CornerRadius" Value="10"/>
-      <Setter Property="Padding" Value="18"/>
-      <Setter Property="Margin" Value="0,0,0,14"/>
+      <Setter Property="CornerRadius" Value="14"/>
+      <Setter Property="Padding" Value="20"/>
+      <Setter Property="Margin" Value="0,0,0,16"/>
     </Style>
     <Style x:Key="InfoKey" TargetType="TextBlock">
-      <Setter Property="Foreground" Value="#6B7280"/>
+      <Setter Property="Foreground" Value="#6E6E73"/>
       <Setter Property="FontSize" Value="12"/>
       <Setter Property="Margin" Value="0,0,0,8"/>
     </Style>
@@ -341,27 +411,35 @@ $xaml = @'
     <!-- Segmented control (DHCP / Manual) -->
     <Style x:Key="Seg" TargetType="RadioButton">
       <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Foreground" Value="#3C4043"/>
+      <Setter Property="Foreground" Value="#6E6E73"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="RadioButton">
-            <!-- Shadow on a separate empty layer, so the label keeps ClearType (see Tile). -->
+            <!-- Shadow on a separate empty layer, so the label keeps ClearType (see Tile).
+                 The selected "pill" fades in/out instead of jumping. -->
             <Grid Margin="2">
-              <Border x:Name="sh" Background="White" CornerRadius="6" Visibility="Hidden">
-                <Border.Effect><DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.14"/></Border.Effect>
+              <Border x:Name="sh" Background="White" CornerRadius="7" Opacity="0">
+                <Border.Effect><DropShadowEffect BlurRadius="6" ShadowDepth="1" Opacity="0.16"/></Border.Effect>
               </Border>
-              <Border x:Name="bd" Background="Transparent" CornerRadius="6" Padding="14,7">
+              <Border x:Name="sel" Background="White" CornerRadius="7" Opacity="0"/>
+              <Border x:Name="bd" Background="Transparent" CornerRadius="7" Padding="14,7">
                 <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
               </Border>
             </Grid>
             <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="#1D1D1F"/></Trigger>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="bd" Property="Background" Value="White"/>
-                <Setter TargetName="sh" Property="Visibility" Value="Visible"/>
                 <Setter Property="FontWeight" Value="SemiBold"/>
-                <Setter Property="Foreground" Value="#0067C0"/>
+                <Setter Property="Foreground" Value="#1D1D1F"/>
+                <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="sel" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.18"/>
+                  <DoubleAnimation Storyboard.TargetName="sh" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.18"/>
+                </Storyboard></BeginStoryboard></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="sel" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.18"/>
+                  <DoubleAnimation Storyboard.TargetName="sh" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.18"/>
+                </Storyboard></BeginStoryboard></Trigger.ExitActions>
               </Trigger>
-              <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="#0067C0"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -374,20 +452,29 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="CheckBox">
+            <!-- The knob slides and the track colour blends; the knob's shadow has no text to blur. -->
             <StackPanel Orientation="Horizontal" Background="Transparent">
-              <Grid Width="40" Height="20" VerticalAlignment="Center">
-                <Border x:Name="track" CornerRadius="10" Background="White" BorderBrush="#8A9099" BorderThickness="1"/>
-                <Ellipse x:Name="thumb" Width="12" Height="12" Fill="#5F6368" HorizontalAlignment="Left" Margin="4,0,0,0"/>
+              <Grid Width="38" Height="22" VerticalAlignment="Center">
+                <Border x:Name="track" CornerRadius="11">
+                  <Border.Background><SolidColorBrush Color="#E3E3E8"/></Border.Background>
+                </Border>
+                <Ellipse x:Name="thumb" Width="18" Height="18" Fill="White" HorizontalAlignment="Left" Margin="2,0,0,0">
+                  <Ellipse.RenderTransform><TranslateTransform/></Ellipse.RenderTransform>
+                  <Ellipse.Effect><DropShadowEffect BlurRadius="4" ShadowDepth="1" Opacity="0.25"/></Ellipse.Effect>
+                </Ellipse>
               </Grid>
-              <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center"/>
+              <ContentPresenter Margin="9,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>
             <ControlTemplate.Triggers>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="track" Property="Background" Value="#0067C0"/>
-                <Setter TargetName="track" Property="BorderBrush" Value="#0067C0"/>
-                <Setter TargetName="thumb" Property="Fill" Value="White"/>
-                <Setter TargetName="thumb" Property="HorizontalAlignment" Value="Right"/>
-                <Setter TargetName="thumb" Property="Margin" Value="0,0,4,0"/>
+                <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="thumb" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)" To="16" Duration="0:0:0.22" EasingFunction="{StaticResource EaseOut}"/>
+                  <ColorAnimation Storyboard.TargetName="track" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="#0071E3" Duration="0:0:0.22"/>
+                </Storyboard></BeginStoryboard></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="thumb" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)" To="0" Duration="0:0:0.22" EasingFunction="{StaticResource EaseOut}"/>
+                  <ColorAnimation Storyboard.TargetName="track" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="#E3E3E8" Duration="0:0:0.22"/>
+                </Storyboard></BeginStoryboard></Trigger.ExitActions>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -403,20 +490,28 @@ $xaml = @'
           <ControlTemplate TargetType="Button">
             <!-- The shadow lives on its own empty layer: a WPF Effect turns everything inside it
                  into a bitmap without ClearType, which made the tile text look blurry. -->
-            <Grid>
-              <Border Background="White" CornerRadius="10">
-                <Border.Effect><DropShadowEffect BlurRadius="16" ShadowDepth="2" Opacity="0.08"/></Border.Effect>
+            <Grid x:Name="root" RenderTransformOrigin="0.5,0.5">
+              <Grid.RenderTransform><ScaleTransform/></Grid.RenderTransform>
+              <Border Background="White" CornerRadius="14">
+                <Border.Effect><DropShadowEffect BlurRadius="14" ShadowDepth="1" Opacity="0.07"/></Border.Effect>
               </Border>
-              <Border x:Name="bd" Background="White" BorderBrush="#E1E4E8" BorderThickness="1" CornerRadius="10" Padding="14,12">
+              <Border x:Name="ov" Background="White" CornerRadius="14" Opacity="0">
+                <Border.Effect><DropShadowEffect BlurRadius="26" ShadowDepth="6" Opacity="0.13"/></Border.Effect>
+              </Border>
+              <Border x:Name="bd" Background="White" BorderBrush="#0D000000" BorderThickness="1" CornerRadius="14" Padding="14,12">
                 <ContentPresenter/>
               </Border>
+              <Border x:Name="pv" Background="#0A000000" CornerRadius="14" Opacity="0" IsHitTestVisible="False"/>
             </Grid>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="bd" Property="BorderBrush" Value="#0067C0"/>
-                <Setter TargetName="bd" Property="Background" Value="#FAFCFF"/>
+                <Trigger.EnterActions><BeginStoryboard Storyboard="{StaticResource HoverIn}"/></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard Storyboard="{StaticResource HoverOut}"/></Trigger.ExitActions>
               </Trigger>
-              <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Background" Value="#EEF4FC"/></Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Trigger.EnterActions><BeginStoryboard Storyboard="{StaticResource PressIn}"/></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard Storyboard="{StaticResource PressOut}"/></Trigger.ExitActions>
+              </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -437,21 +532,21 @@ $xaml = @'
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
-        <Border Width="44" Height="44" CornerRadius="22" Background="{Binding IconBg}" VerticalAlignment="Center">
+        <Border Width="42" Height="42" CornerRadius="10" Background="{Binding IconBg}" VerticalAlignment="Center">
           <TextBlock Text="{Binding Glyph}" FontFamily="{StaticResource Icons}" FontSize="20"
                      Foreground="{Binding IconFg}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
         </Border>
         <StackPanel Grid.Column="1" Margin="12,0,6,0" VerticalAlignment="Center">
           <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14" TextTrimming="CharacterEllipsis"/>
           <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
-            <Ellipse Width="8" Height="8" Fill="{Binding StatusBrush}" VerticalAlignment="Center"/>
-            <TextBlock Text="{Binding StatusText}" Foreground="#5F6368" FontSize="12" Margin="6,0,0,0"/>
+            <Ellipse Width="7" Height="7" Fill="{Binding StatusBrush}" VerticalAlignment="Center"/>
+            <TextBlock Text="{Binding StatusText}" Foreground="#6E6E73" FontSize="12" Margin="6,0,0,0"/>
           </StackPanel>
-          <TextBlock Text="{Binding IPText}" FontFamily="Consolas" FontSize="12" Margin="0,4,0,0"
+          <TextBlock Text="{Binding IPText}" FontFamily="Consolas" FontSize="12" Foreground="#3A3A3C" Margin="0,4,0,0"
                      TextTrimming="CharacterEllipsis"/>
         </StackPanel>
-        <TextBlock Grid.Column="2" Text="&#xE76C;" FontFamily="{StaticResource Icons}" FontSize="12"
-                   Foreground="#9AA0A6" VerticalAlignment="Center"/>
+        <TextBlock Grid.Column="2" Text="&#xE76C;" FontFamily="{StaticResource Icons}" FontSize="11"
+                   Foreground="#C7C7CC" VerticalAlignment="Center"/>
       </Grid>
     </DataTemplate>
     <!-- Wired tiles plug into the laptop with a cable; wireless ones show radio waves -->
@@ -488,24 +583,25 @@ $xaml = @'
               <ContentPresenter VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Background" Value="#DCE9FA"/></Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Background" Value="#D6E7FB"/></Trigger>
+              <Trigger Property="IsPressed" Value="True"><Setter TargetName="bd" Property="Background" Value="#C2DBF8"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
     </Style>
     <DataTemplate x:Key="Chip">
-      <Border Background="#EEF4FC" BorderBrush="#D3E2F5" BorderThickness="1" CornerRadius="16" Margin="0,0,8,8">
+      <Border Background="#EAF2FD" CornerRadius="16" Margin="0,0,8,8">
         <StackPanel Orientation="Horizontal">
           <Button Style="{StaticResource ChipBtn}" Padding="12,6,6,6" CommandParameter="load" ToolTip="{Binding Summary}">
             <StackPanel Orientation="Horizontal">
-              <TextBlock Text="{Binding Glyph}" FontFamily="{StaticResource Icons}" FontSize="12" Foreground="#0067C0"
+              <TextBlock Text="{Binding Glyph}" FontFamily="{StaticResource Icons}" FontSize="12" Foreground="#0071E3"
                          VerticalAlignment="Center" Margin="0,0,7,0"/>
-              <TextBlock Text="{Binding Name}" Foreground="#0B3D75"/>
+              <TextBlock Text="{Binding Name}" Foreground="#0066CC" FontWeight="SemiBold"/>
             </StackPanel>
           </Button>
           <Button Style="{StaticResource ChipBtn}" Padding="6,6,10,6" CommandParameter="delete" ToolTip="Delete this profile">
-            <TextBlock Text="&#xE711;" FontFamily="{StaticResource Icons}" FontSize="9" Foreground="#6B7280"/>
+            <TextBlock Text="&#xE711;" FontFamily="{StaticResource Icons}" FontSize="9" Foreground="#6E9BD0"/>
           </Button>
         </StackPanel>
       </Border>
@@ -513,10 +609,10 @@ $xaml = @'
 
     <!-- ===== Slim Windows 11 style scrollbars ===== -->
     <ControlTemplate x:Key="ThumbTemplate" TargetType="Thumb">
-      <Border x:Name="th" Background="#C4C9D0" CornerRadius="3"/>
+      <Border x:Name="th" Background="#C7C7CC" CornerRadius="3"/>
       <ControlTemplate.Triggers>
-        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="th" Property="Background" Value="#8E959E"/></Trigger>
-        <Trigger Property="IsDragging" Value="True"><Setter TargetName="th" Property="Background" Value="#6B7280"/></Trigger>
+        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="th" Property="Background" Value="#8E8E93"/></Trigger>
+        <Trigger Property="IsDragging" Value="True"><Setter TargetName="th" Property="Background" Value="#6E6E73"/></Trigger>
       </ControlTemplate.Triggers>
     </ControlTemplate>
     <!-- Invisible track halves: clicking above/below the thumb pages up/down -->
@@ -573,6 +669,29 @@ $xaml = @'
       </Style.Triggers>
     </Style>
 
+    <!-- Scroll-edge fades over a page's ScrollViewer (shown by Update-ScrollEdges) -->
+    <Style x:Key="EdgeTop" TargetType="Border">
+      <Setter Property="Height" Value="22"/>
+      <Setter Property="VerticalAlignment" Value="Top"/>
+      <Setter Property="Margin" Value="0,0,14,0"/>
+      <Setter Property="IsHitTestVisible" Value="False"/>
+      <Setter Property="Visibility" Value="Collapsed"/>
+      <Setter Property="Background">
+        <Setter.Value>
+          <LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#FFF2F2F7" Offset="0"/><GradientStop Color="#00F2F2F7" Offset="1"/></LinearGradientBrush>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="EdgeBottom" TargetType="Border" BasedOn="{StaticResource EdgeTop}">
+      <Setter Property="Height" Value="30"/>
+      <Setter Property="VerticalAlignment" Value="Bottom"/>
+      <Setter Property="Background">
+        <Setter.Value>
+          <LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#00F2F2F7" Offset="0"/><GradientStop Color="#FFF2F2F7" Offset="1"/></LinearGradientBrush>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <!-- Keyboard keys for the laptop drawing -->
     <DrawingBrush x:Key="Keys" TileMode="Tile" Viewport="0,0,13,9" ViewportUnits="Absolute" Viewbox="0,0,13,9" ViewboxUnits="Absolute">
       <DrawingBrush.Drawing>
@@ -592,21 +711,22 @@ $xaml = @'
     </Grid.RowDefinitions>
 
     <!-- ============ App bar ============ -->
-    <Border Grid.Row="0" Background="White" BorderBrush="#E3E5E8" BorderThickness="0,0,0,1" Padding="20,9">
+    <!-- One continuous surface with the page (unified toolbar): no divider line -->
+    <Border Grid.Row="0" Background="#F2F2F7" Padding="20,12,20,4">
       <Grid>
         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-          <Border Width="32" Height="32" CornerRadius="8">
+          <Border Width="30" Height="30" CornerRadius="8">
             <Border.Background>
-              <LinearGradientBrush StartPoint="0,0" EndPoint="1,1"><GradientStop Color="#1A7FE0" Offset="0"/><GradientStop Color="#0055A8" Offset="1"/></LinearGradientBrush>
+              <LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#2E9BFF" Offset="0"/><GradientStop Color="#0068D6" Offset="1"/></LinearGradientBrush>
             </Border.Background>
-            <TextBlock Text="&#xE7F8;" Style="{StaticResource Glyph}" Foreground="White" FontSize="17" HorizontalAlignment="Center"/>
+            <TextBlock Text="&#xE7F8;" Style="{StaticResource Glyph}" Foreground="White" FontSize="16" HorizontalAlignment="Center"/>
           </Border>
-          <TextBlock Text="Network Control Center" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Margin="12,0,0,0"/>
-          <TextBlock x:Name="txtVersion" Foreground="#9AA0A6" FontSize="12" VerticalAlignment="Center" Margin="8,2,0,0"/>
+          <TextBlock Text="Network Control Center" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" Margin="11,0,0,0"/>
+          <TextBlock x:Name="txtVersion" Foreground="#8E8E93" FontSize="12" VerticalAlignment="Center" Margin="8,1,0,0"/>
         </StackPanel>
         <StackPanel x:Name="pnlAppBar" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-          <TextBlock x:Name="txtScanGlyph" Text="&#xE895;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#9AA0A6" Margin="0,0,6,0"/>
-          <TextBlock x:Name="txtScanState" Foreground="#6B7280" FontSize="12" VerticalAlignment="Center" Margin="0,0,18,0"/>
+          <TextBlock x:Name="txtScanGlyph" Text="&#xE895;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#8E8E93" Margin="0,0,6,0"/>
+          <TextBlock x:Name="txtScanState" Foreground="#6E6E73" FontSize="12" VerticalAlignment="Center" Margin="0,0,18,0"/>
           <CheckBox x:Name="chkShowAll" Style="{StaticResource Switch}" Content="Show virtual adapters"
                     VerticalAlignment="Center" Margin="0,0,16,0"
                     ToolTip="Also show VPN, Hyper-V, Bluetooth and other virtual adapters"/>
@@ -616,11 +736,11 @@ $xaml = @'
               <TextBlock Text="Refresh" Margin="8,0,0,0"/>
             </StackPanel>
           </Button>
-          <Border Margin="12,0,0,0" CornerRadius="12" Background="#E8F0FE" Padding="10,4" VerticalAlignment="Center"
+          <Border Margin="12,0,0,0" CornerRadius="12" Background="#E3E3E8" Padding="10,4" VerticalAlignment="Center"
                   ToolTip="Running as administrator: changes apply without further prompts">
             <StackPanel Orientation="Horizontal">
-              <TextBlock Text="&#xE7EF;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#0B57D0"/>
-              <TextBlock Text="Admin" Foreground="#0B57D0" FontSize="12" Margin="6,0,0,0"/>
+              <TextBlock Text="&#xE7EF;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#3A3A3C"/>
+              <TextBlock Text="Admin" Foreground="#3A3A3C" FontSize="12" FontWeight="SemiBold" Margin="6,0,0,0"/>
             </StackPanel>
           </Border>
         </StackPanel>
@@ -628,7 +748,7 @@ $xaml = @'
     </Border>
 
     <!-- ============ HOME: the laptop and its connections ============ -->
-    <Grid x:Name="pnlHome" Grid.Row="1" Margin="24,16,24,10">
+    <Grid x:Name="pnlHome" Grid.Row="1" Margin="24,10,24,14">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
         <RowDefinition Height="*"/>
@@ -637,11 +757,8 @@ $xaml = @'
       </Grid.RowDefinitions>
 
       <StackPanel Grid.Row="0">
-        <TextBlock Text="Your connections" FontSize="22" FontWeight="SemiBold"/>
-        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-          <TextBlock Text="&#xE946;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#6B7280" Margin="0,0,6,0"/>
-          <TextBlock Text="Click a connection to change its IP address, gateway, DNS and more." Style="{StaticResource Hint}" FontSize="13"/>
-        </StackPanel>
+        <TextBlock Text="Connections" FontFamily="{StaticResource Display}" FontSize="30" FontWeight="SemiBold"/>
+        <TextBlock Text="Click a connection to change its IP address, gateway, DNS and more." Style="{StaticResource Hint}" FontSize="13" Margin="1,2,0,0"/>
       </StackPanel>
 
       <!-- The stage scales down on small screens instead of being cut off -->
@@ -655,7 +772,7 @@ $xaml = @'
 
           <StackPanel Grid.Column="0" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,-22,2">
             <StackPanel Orientation="Horizontal" Margin="2,0,0,10">
-              <TextBlock Text="&#xE839;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#6B7280" Margin="0,0,6,0"/>
+              <TextBlock Text="&#xE839;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#6E6E73" Margin="0,0,6,0"/>
               <TextBlock Text="WIRED" Style="{StaticResource Section}"/>
             </StackPanel>
             <ItemsControl x:Name="icWired" ItemTemplate="{StaticResource TileLeft}"/>
@@ -745,7 +862,7 @@ $xaml = @'
 
           <StackPanel Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="0,0,0,40">
             <StackPanel Orientation="Horizontal" Margin="48,0,0,10">
-              <TextBlock Text="&#xE701;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#6B7280" Margin="0,0,6,0"/>
+              <TextBlock Text="&#xE701;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#6E6E73" Margin="0,0,6,0"/>
               <TextBlock Text="WIRELESS" Style="{StaticResource Section}"/>
             </StackPanel>
             <ItemsControl x:Name="icWireless" ItemTemplate="{StaticResource TileRight}"/>
@@ -756,7 +873,7 @@ $xaml = @'
 
       <StackPanel x:Name="pnlVirtual" Grid.Row="2" Margin="0,0,0,2">
         <StackPanel Orientation="Horizontal" Margin="2,0,0,10">
-          <TextBlock Text="&#xE968;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#6B7280" Margin="0,0,6,0"/>
+          <TextBlock Text="&#xE968;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#6E6E73" Margin="0,0,6,0"/>
           <TextBlock Text="VIRTUAL &amp; OTHER" Style="{StaticResource Section}"/>
         </StackPanel>
         <ItemsControl x:Name="icVirtual" ItemTemplate="{StaticResource TileSmall}">
@@ -773,8 +890,8 @@ $xaml = @'
             <ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
           <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-            <Border Style="{StaticResource CardIcon}">
-              <TextBlock Text="&#xE9D9;" Style="{StaticResource Glyph}" Foreground="#0067C0" HorizontalAlignment="Center"/>
+            <Border Style="{StaticResource CardIcon}" Background="#34C759">
+              <TextBlock Text="&#xE9D9;" Style="{StaticResource Glyph}" Foreground="White" HorizontalAlignment="Center"/>
             </Border>
             <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
               <TextBlock Text="Ping" FontWeight="SemiBold"/>
@@ -792,19 +909,19 @@ $xaml = @'
           <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
             <Button x:Name="btnFlushDns" Style="{StaticResource Btn}" Margin="0,0,8,0" ToolTip="Clear the DNS resolver cache (ipconfig /flushdns)">
               <StackPanel Orientation="Horizontal">
-                <TextBlock Text="&#xE774;" Style="{StaticResource Glyph}" Foreground="#0067C0"/>
+                <TextBlock Text="&#xE774;" Style="{StaticResource Glyph}" Foreground="#0071E3"/>
                 <TextBlock Text="Flush DNS" Margin="8,0,0,0"/>
               </StackPanel>
             </Button>
             <Button x:Name="btnClearArp" Style="{StaticResource Btn}" Margin="0,0,8,0" ToolTip="Clear the ARP cache - use after swapping devices that share an IP">
               <StackPanel Orientation="Horizontal">
-                <TextBlock Text="&#xE895;" Style="{StaticResource Glyph}" Foreground="#0067C0"/>
+                <TextBlock Text="&#xE895;" Style="{StaticResource Glyph}" Foreground="#0071E3"/>
                 <TextBlock Text="Clear ARP" Margin="8,0,0,0"/>
               </StackPanel>
             </Button>
             <Button x:Name="btnOpenData" Style="{StaticResource Btn}" ToolTip="Profiles and the change log live here">
               <StackPanel Orientation="Horizontal">
-                <TextBlock Text="&#xE838;" Style="{StaticResource Glyph}" Foreground="#0067C0"/>
+                <TextBlock Text="&#xE838;" Style="{StaticResource Glyph}" Foreground="#0071E3"/>
                 <TextBlock Text="Log &amp; data" Margin="8,0,0,0"/>
               </StackPanel>
             </Button>
@@ -833,9 +950,9 @@ $xaml = @'
         <StackPanel x:Name="pnlAdapterActions" Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
           <StackPanel.Resources>
             <Style TargetType="Button" BasedOn="{StaticResource ActionTile}">
-              <Setter Property="Width" Value="82"/>
+              <Setter Property="Width" Value="78"/>
               <Setter Property="Height" Value="60"/>
-              <Setter Property="Margin" Value="6,0,0,0"/>
+              <Setter Property="Margin" Value="2,0,0,0"/>
             </Style>
           </StackPanel.Resources>
           <Button x:Name="btnDhcp" ToolTip="Switch to automatic addressing (DHCP) right away">
@@ -858,7 +975,7 @@ $xaml = @'
           </Button>
           <Button x:Name="btnToggleEnable">
             <StackPanel>
-              <TextBlock x:Name="txtToggleGlyph" Text="&#xE7E8;" Style="{StaticResource ActionGlyph}" FontSize="18" Foreground="#C5221F"/>
+              <TextBlock x:Name="txtToggleGlyph" Text="&#xE7E8;" Style="{StaticResource ActionGlyph}" FontSize="18" Foreground="#FF3B30"/>
               <TextBlock x:Name="txtToggleEnable" Text="Disable" Style="{StaticResource ActionText}" Margin="0,4,0,0"/>
             </StackPanel>
           </Button>
@@ -869,15 +986,18 @@ $xaml = @'
             </StackPanel>
           </Button>
         </StackPanel>
-        <Button x:Name="btnBack" Style="{StaticResource BtnGhost}" Width="40" Height="40" Padding="0" ToolTip="Back to all connections (Esc)">
-          <TextBlock Text="&#xE72B;" Style="{StaticResource Glyph}" FontSize="16"/>
+        <Button x:Name="btnBack" Style="{StaticResource BtnGhost}" Height="34" Padding="6,0,10,0" VerticalAlignment="Center" ToolTip="Back to all connections (Esc)">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="&#xE76B;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#0071E3"/>
+            <TextBlock Text="Connections" Foreground="#0071E3" FontSize="13.5" Margin="5,0,0,0"/>
+          </StackPanel>
         </Button>
-        <Border x:Name="bdAdapterIcon" Grid.Column="1" Width="52" Height="52" CornerRadius="26" Margin="8,0,14,0" Background="#E8F0FE">
-          <TextBlock x:Name="txtAdapterGlyph" Style="{StaticResource Glyph}" FontSize="24" Foreground="#0B57D0" HorizontalAlignment="Center"/>
+        <Border x:Name="bdAdapterIcon" Grid.Column="1" Width="50" Height="50" CornerRadius="12" Margin="12,0,14,0" Background="#EAF2FD">
+          <TextBlock x:Name="txtAdapterGlyph" Style="{StaticResource Glyph}" FontSize="24" Foreground="#0066CC" HorizontalAlignment="Center"/>
         </Border>
         <StackPanel Grid.Column="2" VerticalAlignment="Center">
           <StackPanel Orientation="Horizontal">
-            <TextBlock x:Name="txtAdapterName" FontSize="22" FontWeight="SemiBold"/>
+            <TextBlock x:Name="txtAdapterName" FontFamily="{StaticResource Display}" FontSize="26" FontWeight="SemiBold"/>
             <Border x:Name="bdStatusPill" CornerRadius="11" Padding="10,2" Margin="12,0,0,0" VerticalAlignment="Center">
               <StackPanel Orientation="Horizontal">
                 <Ellipse x:Name="elStatusDot" Width="8" Height="8" VerticalAlignment="Center"/>
@@ -885,7 +1005,7 @@ $xaml = @'
               </StackPanel>
             </Border>
           </StackPanel>
-          <TextBlock x:Name="txtDetail" Foreground="#6B7280" FontSize="12" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/>
+          <TextBlock x:Name="txtDetail" Foreground="#6E6E73" FontSize="12.5" Margin="1,2,0,0" TextTrimming="CharacterEllipsis"/>
         </StackPanel>
       </Grid>
 
@@ -905,10 +1025,10 @@ $xaml = @'
               <StackPanel>
                 <Grid Margin="0,0,0,14">
                   <StackPanel Orientation="Horizontal">
-                    <Border Style="{StaticResource CardIcon}"><TextBlock Text="&#xE968;" Style="{StaticResource Glyph}" Foreground="#0067C0" HorizontalAlignment="Center"/></Border>
+                    <Border Style="{StaticResource CardIcon}" Background="#0A84FF"><TextBlock Text="&#xE968;" Style="{StaticResource Glyph}" Foreground="White" HorizontalAlignment="Center"/></Border>
                     <TextBlock Text="IP settings" Style="{StaticResource CardTitle}"/>
                   </StackPanel>
-                  <Border HorizontalAlignment="Right" Background="#ECEEF1" CornerRadius="8" Padding="2">
+                  <Border HorizontalAlignment="Right" Background="#E3E3E8" CornerRadius="8" Padding="2">
                     <StackPanel Orientation="Horizontal">
                       <RadioButton x:Name="rbDhcp" Style="{StaticResource Seg}" GroupName="mode">
                         <StackPanel Orientation="Horizontal">
@@ -927,18 +1047,18 @@ $xaml = @'
                 </Grid>
 
                 <!-- DHCP explanation -->
-                <Border x:Name="pnlDhcpInfo" Background="#F6F8FA" CornerRadius="8" Padding="16,14" Visibility="Collapsed">
+                <Border x:Name="pnlDhcpInfo" Background="#F2F2F7" CornerRadius="8" Padding="16,14" Visibility="Collapsed">
                   <StackPanel>
                     <Grid>
                       <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                      <TextBlock Text="&#xE946;" Style="{StaticResource Glyph}" Foreground="#0067C0" FontSize="16" VerticalAlignment="Top" Margin="0,1,10,0"/>
-                      <TextBlock x:Name="txtDhcpInfo" Grid.Column="1" Style="{StaticResource Hint}" FontSize="13" Foreground="#3C4043"/>
+                      <TextBlock Text="&#xE946;" Style="{StaticResource Glyph}" Foreground="#0071E3" FontSize="16" VerticalAlignment="Top" Margin="0,1,10,0"/>
+                      <TextBlock x:Name="txtDhcpInfo" Grid.Column="1" Style="{StaticResource Hint}" FontSize="13" Foreground="#3A3A3C"/>
                     </Grid>
                     <!-- What DHCP handed out, one value per line -->
                     <Grid x:Name="grdCurrent" Margin="26,12,0,0">
                       <Grid.Resources>
                         <Style x:Key="CurKey" TargetType="TextBlock">
-                          <Setter Property="Foreground" Value="#5F6368"/>
+                          <Setter Property="Foreground" Value="#6E6E73"/>
                           <Setter Property="Margin" Value="0,0,0,8"/>
                           <Setter Property="VerticalAlignment" Value="Top"/>
                         </Style>
@@ -975,7 +1095,7 @@ $xaml = @'
 
                 <!-- Manual -->
                 <StackPanel x:Name="pnlManual">
-                  <Border Background="#EEF4FC" BorderBrush="#D3E2F5" BorderThickness="1" CornerRadius="8" Padding="14,12" Margin="0,0,0,16">
+                  <Border Background="#EAF2FD" CornerRadius="10" Padding="14,12" Margin="0,0,0,18">
                     <Grid>
                       <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -984,14 +1104,14 @@ $xaml = @'
                         <ColumnDefinition Width="Auto"/>
                       </Grid.ColumnDefinitions>
                       <Border Width="34" Height="34" CornerRadius="17" Background="White" Margin="0,0,12,0">
-                        <TextBlock Text="&#xE945;" Style="{StaticResource Glyph}" Foreground="#0067C0" FontSize="16" HorizontalAlignment="Center"/>
+                        <TextBlock Text="&#xE945;" Style="{StaticResource Glyph}" Foreground="#0071E3" FontSize="16" HorizontalAlignment="Center"/>
                       </Border>
                       <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                        <TextBlock Text="Connecting to a device?" FontWeight="SemiBold" Foreground="#0B3D75"/>
+                        <TextBlock Text="Connecting to a device?" FontWeight="SemiBold" Foreground="#0A3A70"/>
                         <TextBlock Text="Type its IP (modem, router, switch...) - your IP, mask and gateway are filled in for you."
-                                   Style="{StaticResource Hint}" Foreground="#3B5B85"/>
+                                   Style="{StaticResource Hint}" Foreground="#3A5A80"/>
                       </StackPanel>
-                      <TextBox x:Name="txtDeviceIp" Grid.Column="2" Width="150" Margin="12,0,8,0" FontFamily="Consolas"
+                      <TextBox x:Name="txtDeviceIp" Grid.Column="2" Width="150" Margin="12,0,8,0" FontFamily="Consolas" Background="White" BorderBrush="White"
                                Tag="device IP" ToolTip="Device IP, e.g. 192.168.1.1 - press Enter to fill in"/>
                       <Button x:Name="btnQuickFill" Grid.Column="3" Style="{StaticResource BtnAccent}">
                         <StackPanel Orientation="Horizontal">
@@ -1024,14 +1144,14 @@ $xaml = @'
                     <StackPanel Grid.Row="0" Grid.Column="2">
                       <StackPanel Style="{StaticResource FieldHead}">
                         <TextBlock Text="&#xF22C;" Style="{StaticResource LabelIcon}"/>
-                        <TextBlock Text="Subnet mask  (pick, or type /24 or 255.255.255.0)" Style="{StaticResource Label}"/>
+                        <TextBlock Style="{StaticResource Label}"><Run Text="Subnet mask"/><Run Text="   pick, or type /24 or 255.255.255.0" Foreground="#8E8E93"/></TextBlock>
                       </StackPanel>
                       <ComboBox x:Name="cmbMask" FontFamily="Consolas" FontSize="14"/>
                     </StackPanel>
 
-                    <Border Grid.Row="1" Grid.ColumnSpan="3" Background="#F6F8FA" CornerRadius="6" Padding="10,7" Margin="0,10,0,14">
+                    <Border Grid.Row="1" Grid.ColumnSpan="3" Padding="3,8,0,0" Margin="0,0,0,14">
                       <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="&#xF22C;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#6B7280" Margin="0,0,8,0"/>
+                        <TextBlock Text="&#xF22C;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#6E6E73" Margin="0,0,8,0"/>
                         <TextBlock x:Name="txtSubnetInfo" Style="{StaticResource Hint}" FontFamily="Consolas"/>
                       </StackPanel>
                     </Border>
@@ -1039,7 +1159,7 @@ $xaml = @'
                     <StackPanel Grid.Row="2" Grid.Column="0">
                       <StackPanel Style="{StaticResource FieldHead}">
                         <TextBlock Text="&#xE8CE;" Style="{StaticResource LabelIcon}"/>
-                        <TextBlock Text="Gateway  (optional - router to other networks)" Style="{StaticResource Label}"/>
+                        <TextBlock Style="{StaticResource Label}"><Run Text="Gateway"/><Run Text="   optional - router to other networks" Foreground="#8E8E93"/></TextBlock>
                       </StackPanel>
                       <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -1047,8 +1167,8 @@ $xaml = @'
                         <Button x:Name="btnSuggestGw" Grid.Column="1" Style="{StaticResource BtnGhost}" Margin="4,0,0,0" Padding="8,0"
                                 ToolTip="Use the first address of the subnet (usually the router)">
                           <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE945;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#0067C0"/>
-                            <TextBlock Text="Suggest" Foreground="#0067C0" Margin="5,0,0,0"/>
+                            <TextBlock Text="&#xE945;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#0071E3"/>
+                            <TextBlock Text="Suggest" Foreground="#0071E3" Margin="5,0,0,0"/>
                           </StackPanel>
                         </Button>
                       </Grid>
@@ -1074,11 +1194,11 @@ $xaml = @'
                   </Grid>
                 </StackPanel>
 
-                <Border x:Name="bdFormError" Background="#FDECEA" CornerRadius="6" Padding="10,8" Margin="0,14,0,0" Visibility="Collapsed">
+                <Border x:Name="bdFormError" Background="#FDECEB" CornerRadius="6" Padding="10,8" Margin="0,14,0,0" Visibility="Collapsed">
                   <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="&#xE7BA;" Style="{StaticResource Glyph}" Foreground="#B3261E" Margin="0,0,8,0" VerticalAlignment="Top"/>
-                    <TextBlock x:Name="txtFormError" Grid.Column="1" Foreground="#8C1D18" TextWrapping="Wrap"/>
+                    <TextBlock Text="&#xE7BA;" Style="{StaticResource Glyph}" Foreground="#D70015" Margin="0,0,8,0" VerticalAlignment="Top"/>
+                    <TextBlock x:Name="txtFormError" Grid.Column="1" Foreground="#9F1A10" TextWrapping="Wrap"/>
                   </Grid>
                 </Border>
               </StackPanel>
@@ -1089,15 +1209,15 @@ $xaml = @'
               <StackPanel>
                 <Grid Margin="0,0,0,10">
                   <StackPanel Orientation="Horizontal">
-                    <Border Style="{StaticResource CardIcon}"><TextBlock Text="&#xE734;" Style="{StaticResource Glyph}" Foreground="#0067C0" HorizontalAlignment="Center"/></Border>
+                    <Border Style="{StaticResource CardIcon}" Background="#FF9500"><TextBlock Text="&#xE734;" Style="{StaticResource Glyph}" Foreground="White" HorizontalAlignment="Center"/></Border>
                     <TextBlock Text="Profiles" Style="{StaticResource CardTitle}"/>
                     <TextBlock Text="click to fill the form" Style="{StaticResource Hint}" VerticalAlignment="Center" Margin="10,1,0,0"/>
                   </StackPanel>
                   <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button x:Name="btnShowSave" Style="{StaticResource BtnGhost}" Padding="8,0" Height="30" ToolTip="Save the form as a new profile">
                       <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="&#xE710;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#0067C0"/>
-                        <TextBlock Text="Save current" Margin="6,0,0,0" FontSize="12" Foreground="#0067C0"/>
+                        <TextBlock Text="&#xE710;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#0071E3"/>
+                        <TextBlock Text="Save current" Margin="6,0,0,0" FontSize="12" Foreground="#0071E3"/>
                       </StackPanel>
                     </Button>
                     <Button x:Name="btnImportProfiles" Style="{StaticResource BtnGhost}" Padding="8,0" Height="30" ToolTip="Import profiles from a JSON file (same name = replaced)">
@@ -1144,7 +1264,7 @@ $xaml = @'
                 </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                 <StackPanel Orientation="Horizontal" Margin="0,0,14,0">
-                  <Border Style="{StaticResource CardIcon}"><TextBlock Text="&#xE9D9;" Style="{StaticResource Glyph}" Foreground="#0067C0" HorizontalAlignment="Center"/></Border>
+                  <Border Style="{StaticResource CardIcon}" Background="#34C759"><TextBlock Text="&#xE9D9;" Style="{StaticResource Glyph}" Foreground="White" HorizontalAlignment="Center"/></Border>
                   <TextBlock Text="Test connection" Style="{StaticResource CardTitle}"/>
                 </StackPanel>
                 <TextBox x:Name="txtPingTarget" Grid.Column="1" FontFamily="Consolas" Tag="IP or hostname" MaxWidth="320" HorizontalAlignment="Stretch"
@@ -1155,10 +1275,10 @@ $xaml = @'
                     <TextBlock Text="Ping" Margin="6,0,0,0"/>
                   </StackPanel>
                 </Button>
-                <Border x:Name="bdPingResult" Grid.Row="1" Grid.ColumnSpan="3" Background="#F6F8FA" CornerRadius="6" Padding="10,7" Margin="0,10,0,0">
+                <Border x:Name="bdPingResult" Grid.Row="1" Grid.ColumnSpan="3" Background="Transparent" CornerRadius="8" Padding="10,8" Margin="0,10,0,0">
                   <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <TextBlock x:Name="txtPingGlyph" Text="&#xE946;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#6B7280" VerticalAlignment="Top" Margin="0,1,8,0"/>
+                    <TextBlock x:Name="txtPingGlyph" Text="&#xE946;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#6E6E73" VerticalAlignment="Top" Margin="0,1,8,0"/>
                     <TextBlock x:Name="txtPingResult" Grid.Column="1" Style="{StaticResource Hint}"/>
                   </Grid>
                 </Border>
@@ -1166,6 +1286,9 @@ $xaml = @'
             </Border>
           </StackPanel>
         </ScrollViewer>
+        <!-- Scroll edges: a short fade into the page colour says "more above/below" (no divider lines) -->
+        <Border x:Name="fdFormTop" Style="{StaticResource EdgeTop}"/>
+        <Border x:Name="fdFormBottom" Style="{StaticResource EdgeBottom}"/>
 
         <!-- ===== Side: advanced settings + details (less used) ===== -->
         <ScrollViewer x:Name="svSide" Grid.Column="2" VerticalScrollBarVisibility="Auto">
@@ -1173,21 +1296,21 @@ $xaml = @'
             <Border Style="{StaticResource Card}">
               <StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-                  <Border Style="{StaticResource CardIcon}"><TextBlock Text="&#xE9E9;" Style="{StaticResource Glyph}" Foreground="#0067C0" HorizontalAlignment="Center"/></Border>
+                  <Border Style="{StaticResource CardIcon}" Background="#8E8E93"><TextBlock Text="&#xE9E9;" Style="{StaticResource Glyph}" Foreground="White" HorizontalAlignment="Center"/></Border>
                   <TextBlock Text="Advanced" Style="{StaticResource CardTitle}"/>
                 </StackPanel>
                 <TextBlock Text="Rarely needed - leave as is unless you know you need it." Style="{StaticResource Hint}" Margin="0,0,0,14"/>
 
                 <StackPanel Style="{StaticResource FieldHead}">
                   <TextBlock Text="&#xE9D2;" Style="{StaticResource LabelIcon}"/>
-                  <TextBlock Text="MTU  (bytes, 576-9216)" Style="{StaticResource Label}"/>
+                  <TextBlock Style="{StaticResource Label}"><Run Text="MTU"/><Run Text="   bytes, 576-9216" Foreground="#8E8E93"/></TextBlock>
                 </StackPanel>
                 <ComboBox x:Name="cmbMtu" FontFamily="Consolas" FontSize="14"/>
                 <TextBlock Text="Packet size. Applies in DHCP and manual mode." Style="{StaticResource Hint}" Margin="0,4,0,14"/>
 
                 <StackPanel Style="{StaticResource FieldHead}">
                   <TextBlock Text="&#xE8EC;" Style="{StaticResource LabelIcon}"/>
-                  <TextBlock Text="VLAN ID  (0 = untagged)" Style="{StaticResource Label}"/>
+                  <TextBlock Style="{StaticResource Label}"><Run Text="VLAN ID"/><Run Text="   0 = untagged" Foreground="#8E8E93"/></TextBlock>
                 </StackPanel>
                 <TextBox x:Name="txtVlan" FontFamily="Consolas" FontSize="14" Tag="0 - 4094"/>
                 <TextBlock x:Name="lblVlanNote" Style="{StaticResource Hint}" Margin="0,4,0,14"/>
@@ -1207,12 +1330,12 @@ $xaml = @'
               <StackPanel>
                 <Grid Margin="0,0,0,4">
                   <StackPanel Orientation="Horizontal">
-                    <Border Style="{StaticResource CardIcon}"><TextBlock Text="&#xE704;" Style="{StaticResource Glyph}" Foreground="#0067C0" HorizontalAlignment="Center"/></Border>
+                    <Border Style="{StaticResource CardIcon}" Background="#30B0C7"><TextBlock Text="&#xE704;" Style="{StaticResource Glyph}" Foreground="White" HorizontalAlignment="Center"/></Border>
                     <TextBlock Text="Internet sharing" Style="{StaticResource CardTitle}"/>
                   </StackPanel>
-                  <Border x:Name="bdIcsPill" HorizontalAlignment="Right" VerticalAlignment="Center" CornerRadius="10" Padding="9,2" Background="#F1F3F4">
+                  <Border x:Name="bdIcsPill" HorizontalAlignment="Right" VerticalAlignment="Center" CornerRadius="10" Padding="9,2" Background="#EFEFF4">
                     <StackPanel Orientation="Horizontal">
-                      <Ellipse x:Name="elIcsDot" Width="7" Height="7" Fill="#9AA0A6" VerticalAlignment="Center"/>
+                      <Ellipse x:Name="elIcsDot" Width="7" Height="7" Fill="#8E8E93" VerticalAlignment="Center"/>
                       <TextBlock x:Name="txtIcsPill" Text="Off" FontSize="11.5" Margin="5,0,0,0"/>
                     </StackPanel>
                   </Border>
@@ -1235,13 +1358,13 @@ $xaml = @'
                 </StackPanel>
 
                 <!-- The running pair -->
-                <Border x:Name="pnlIcsActive" Background="#E6F4EA" CornerRadius="8" Padding="12,10" Margin="0,0,0,12" Visibility="Collapsed">
+                <Border x:Name="pnlIcsActive" Background="#E3F5E8" CornerRadius="8" Padding="12,10" Margin="0,0,0,12" Visibility="Collapsed">
                   <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                    <TextBlock x:Name="txtIcsFromGlyph" Style="{StaticResource Glyph}" Foreground="#137333" Margin="0,0,6,0"/>
-                    <TextBlock x:Name="txtIcsFromName" FontWeight="SemiBold" Foreground="#0D5222"/>
-                    <TextBlock Text="&#xE72A;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#137333" Margin="10,0"/>
-                    <TextBlock x:Name="txtIcsToGlyph" Style="{StaticResource Glyph}" Foreground="#137333" Margin="0,0,6,0"/>
-                    <TextBlock x:Name="txtIcsToName" FontWeight="SemiBold" Foreground="#0D5222"/>
+                    <TextBlock x:Name="txtIcsFromGlyph" Style="{StaticResource Glyph}" Foreground="#248A3D" Margin="0,0,6,0"/>
+                    <TextBlock x:Name="txtIcsFromName" FontWeight="SemiBold" Foreground="#1B6B30"/>
+                    <TextBlock Text="&#xE72A;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#248A3D" Margin="10,0"/>
+                    <TextBlock x:Name="txtIcsToGlyph" Style="{StaticResource Glyph}" Foreground="#248A3D" Margin="0,0,6,0"/>
+                    <TextBlock x:Name="txtIcsToName" FontWeight="SemiBold" Foreground="#1B6B30"/>
                   </StackPanel>
                 </Border>
 
@@ -1251,13 +1374,13 @@ $xaml = @'
                   <TextBlock Text="This PC's address on the shared port" Style="{StaticResource Label}"/>
                 </StackPanel>
                 <ComboBox x:Name="cmbIcsScope" FontFamily="Consolas" FontSize="14"/>
-                <Border Background="#F6F8FA" CornerRadius="6" Padding="10,8" Margin="0,8,0,10">
+                <Border Padding="2,0,0,0" Margin="0,8,0,12">
                   <TextBlock x:Name="txtIcsDhcpInfo" Style="{StaticResource Hint}"/>
                 </Border>
                 <CheckBox x:Name="chkIcsPersist" Style="{StaticResource Switch}" Content="Keep sharing after a restart" Margin="0,0,0,12"
                           ToolTip="Windows normally stops sharing when the PC restarts"/>
-                <Border x:Name="bdIcsError" Background="#FDECEA" CornerRadius="6" Padding="10,8" Margin="0,0,0,10" Visibility="Collapsed">
-                  <TextBlock x:Name="txtIcsError" Foreground="#8C1D18" TextWrapping="Wrap" FontSize="12"/>
+                <Border x:Name="bdIcsError" Background="#FDECEB" CornerRadius="6" Padding="10,8" Margin="0,0,0,10" Visibility="Collapsed">
+                  <TextBlock x:Name="txtIcsError" Foreground="#9F1A10" TextWrapping="Wrap" FontSize="12"/>
                 </Border>
                 <StackPanel Orientation="Horizontal">
                   <Button x:Name="btnIcsStart" Style="{StaticResource BtnAccent}" Padding="14,0">
@@ -1269,7 +1392,7 @@ $xaml = @'
                   <Button x:Name="btnIcsStop" Style="{StaticResource Btn}" Margin="8,0,0,0" Padding="12,0" Visibility="Collapsed"
                           ToolTip="Stops sharing and puts the shared port back on automatic (DHCP)">
                     <StackPanel Orientation="Horizontal">
-                      <TextBlock Text="&#xE71A;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#C5221F"/>
+                      <TextBlock Text="&#xE71A;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#FF3B30"/>
                       <TextBlock Text="Stop sharing" Margin="7,0,0,0"/>
                     </StackPanel>
                   </Button>
@@ -1289,13 +1412,13 @@ $xaml = @'
                   <ItemsControl x:Name="icIcsClients">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
-                        <Border Background="#F6F8FA" CornerRadius="6" Padding="10,6" Margin="0,0,0,4">
+                        <Border Background="#F2F2F7" CornerRadius="6" Padding="10,6" Margin="0,0,0,4">
                           <Grid>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                            <TextBlock Text="&#xE839;" FontFamily="{StaticResource Icons}" FontSize="13" Foreground="#0067C0" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBlock Text="&#xE839;" FontFamily="{StaticResource Icons}" FontSize="13" Foreground="#0071E3" VerticalAlignment="Center" Margin="0,0,10,0"/>
                             <StackPanel Grid.Column="1">
                               <TextBlock Text="{Binding Ip}" FontFamily="Consolas" FontSize="13" FontWeight="SemiBold"/>
-                              <TextBlock FontSize="11" Foreground="#6B7280">
+                              <TextBlock FontSize="11" Foreground="#6E6E73">
                                 <Run Text="{Binding Mac, Mode=OneWay}" FontFamily="Consolas"/><Run Text="  "/><Run Text="{Binding Seen, Mode=OneWay}"/>
                               </TextBlock>
                             </StackPanel>
@@ -1312,7 +1435,7 @@ $xaml = @'
             <Border Style="{StaticResource Card}">
               <StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-                  <Border Style="{StaticResource CardIcon}"><TextBlock Text="&#xE946;" Style="{StaticResource Glyph}" Foreground="#0067C0" HorizontalAlignment="Center"/></Border>
+                  <Border Style="{StaticResource CardIcon}" Background="#636366"><TextBlock Text="&#xE946;" Style="{StaticResource Glyph}" Foreground="White" HorizontalAlignment="Center"/></Border>
                   <TextBlock Text="Details" Style="{StaticResource CardTitle}"/>
                 </StackPanel>
                 <Grid>
@@ -1325,19 +1448,19 @@ $xaml = @'
                     <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                   </Grid.RowDefinitions>
-                  <TextBlock Grid.Row="0" Text="&#xE950;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#6B7280" VerticalAlignment="Top"/>
+                  <TextBlock Grid.Row="0" Text="&#xE950;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#6E6E73" VerticalAlignment="Top"/>
                   <TextBlock Grid.Row="0" Grid.Column="1" Text="Hardware" Style="{StaticResource InfoKey}"/>
                   <TextBlock Grid.Row="0" Grid.Column="2" x:Name="txtInfoHw" Style="{StaticResource InfoVal}"/>
-                  <TextBlock Grid.Row="1" Text="&#xE8EC;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#6B7280" VerticalAlignment="Top"/>
+                  <TextBlock Grid.Row="1" Text="&#xE8EC;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#6E6E73" VerticalAlignment="Top"/>
                   <TextBlock Grid.Row="1" Grid.Column="1" Text="MAC" Style="{StaticResource InfoKey}"/>
                   <TextBlock Grid.Row="1" Grid.Column="2" x:Name="txtInfoMac" Style="{StaticResource InfoVal}" FontFamily="Consolas"/>
-                  <TextBlock Grid.Row="2" Text="&#xEC3B;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#6B7280" VerticalAlignment="Top"/>
+                  <TextBlock Grid.Row="2" Text="&#xEC3B;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#6E6E73" VerticalAlignment="Top"/>
                   <TextBlock Grid.Row="2" Grid.Column="1" Text="Link speed" Style="{StaticResource InfoKey}"/>
                   <TextBlock Grid.Row="2" Grid.Column="2" x:Name="txtInfoSpeed" Style="{StaticResource InfoVal}"/>
-                  <TextBlock Grid.Row="3" Text="&#xE968;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#6B7280" VerticalAlignment="Top"/>
+                  <TextBlock Grid.Row="3" Text="&#xE968;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#6E6E73" VerticalAlignment="Top"/>
                   <TextBlock Grid.Row="3" Grid.Column="1" Text="Type" Style="{StaticResource InfoKey}"/>
                   <TextBlock Grid.Row="3" Grid.Column="2" x:Name="txtInfoType" Style="{StaticResource InfoVal}"/>
-                  <TextBlock Grid.Row="4" Text="&#xE8CB;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#6B7280" VerticalAlignment="Top"/>
+                  <TextBlock Grid.Row="4" Text="&#xE8CB;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#6E6E73" VerticalAlignment="Top"/>
                   <TextBlock Grid.Row="4" Grid.Column="1" Text="Interface #" Style="{StaticResource InfoKey}"/>
                   <TextBlock Grid.Row="4" Grid.Column="2" x:Name="txtInfoIndex" Style="{StaticResource InfoVal}"/>
                 </Grid>
@@ -1345,10 +1468,12 @@ $xaml = @'
             </Border>
           </StackPanel>
         </ScrollViewer>
+        <Border x:Name="fdSideTop" Grid.Column="2" Style="{StaticResource EdgeTop}"/>
+        <Border x:Name="fdSideBottom" Grid.Column="2" Style="{StaticResource EdgeBottom}"/>
       </Grid>
 
       <!-- Sticky action bar -->
-      <Border Grid.Row="2" Background="White" BorderBrush="#E3E5E8" BorderThickness="0,1,0,0" Padding="24,11">
+      <Border Grid.Row="2" Background="#F2F2F7" Padding="24,6,24,12">
         <Grid>
           <StackPanel Orientation="Horizontal">
             <Button x:Name="btnUndo" Style="{StaticResource Btn}" IsEnabled="False">
@@ -1357,10 +1482,10 @@ $xaml = @'
                 <TextBlock Text="Undo last change" Margin="8,0,0,0"/>
               </StackPanel>
             </Button>
-            <Border x:Name="txtDirty" Background="#FEF7E0" CornerRadius="11" Padding="10,3" Margin="14,0,0,0" VerticalAlignment="Center" Visibility="Collapsed">
+            <Border x:Name="txtDirty" Background="#FFEBCC" CornerRadius="11" Padding="10,3" Margin="14,0,0,0" VerticalAlignment="Center" Visibility="Collapsed">
               <StackPanel Orientation="Horizontal">
-                <TextBlock Text="&#xE70F;" Style="{StaticResource Glyph}" FontSize="11" Foreground="#B45309" Margin="0,0,6,0"/>
-                <TextBlock Text="Edited - not applied yet" Foreground="#B45309" FontSize="12"/>
+                <TextBlock Text="&#xE70F;" Style="{StaticResource Glyph}" FontSize="11" Foreground="#B25000" Margin="0,0,6,0"/>
+                <TextBlock Text="Edited - not applied yet" Foreground="#B25000" FontSize="12"/>
               </StackPanel>
             </Border>
           </StackPanel>
@@ -1383,13 +1508,13 @@ $xaml = @'
     </Grid>
 
     <!-- ============ Status bar ============ -->
-    <Border x:Name="bdStatus" Grid.Row="2" Background="#EEF0F3" BorderBrush="#E3E5E8" BorderThickness="0,1,0,0">
+    <Border x:Name="bdStatus" Grid.Row="2" Background="#EBEBF0">
       <Grid>
         <ProgressBar x:Name="pbBusy" Height="3" VerticalAlignment="Top" IsIndeterminate="True" Visibility="Collapsed"
-                     BorderThickness="0" Background="Transparent" Foreground="#0067C0"/>
-        <StackPanel Orientation="Horizontal" Margin="20,8">
-          <TextBlock x:Name="txtStatusIcon" Text="&#xE946;" Style="{StaticResource Glyph}" Foreground="#5F6368" Margin="0,0,10,0"/>
-          <TextBlock x:Name="txtStatusBar" Text="Ready." TextWrapping="Wrap" VerticalAlignment="Center"/>
+                     BorderThickness="0" Background="Transparent" Foreground="#0071E3"/>
+        <StackPanel Orientation="Horizontal" Margin="22,7">
+          <TextBlock x:Name="txtStatusIcon" Text="&#xE946;" Style="{StaticResource Glyph}" FontSize="13" Foreground="#6E6E73" Margin="0,0,9,0"/>
+          <TextBlock x:Name="txtStatusBar" Text="Ready." FontSize="12.5" TextWrapping="Wrap" VerticalAlignment="Center"/>
         </StackPanel>
       </Grid>
     </Border>
@@ -1411,6 +1536,7 @@ try {
 # Grab named controls
 $controlNames = @(
     'txtVersion','pnlAppBar','txtScanGlyph','txtScanState','chkShowAll','btnRefresh',
+    'fdFormTop','fdFormBottom','fdSideTop','fdSideBottom',
     'txtScreenGlyph','txtPingHomeHint','bdPingResult','txtPingGlyph','txtToggleGlyph',
     'txtInfoHw','txtInfoMac','txtInfoSpeed','txtInfoType','txtInfoIndex','btnShowSave','pnlSaveProfile','btnCancelSave',
     'grdCurrent','txtCurIp','txtCurMask','txtCurGw','txtCurDns',
@@ -1456,10 +1582,10 @@ function Set-Status([string]$msg, [string]$type = 'info') {
     # CIM/driver error messages often carry embedded/trailing newlines - keep the status bar to one line.
     $ctl.txtStatusBar.Text = ($msg -replace '\s*\r?\n\s*', ' ').Trim()
     $style = switch ($type) {
-        'ok'    { @('#E6F4EA', '#137333', 0xE930) }
-        'warn'  { @('#FEF7E0', '#B45309', 0xE7BA) }
-        'err'   { @('#FDECEA', '#B3261E', 0xEA39) }
-        default { @('#EEF0F3', '#5F6368', 0xE946) }
+        'ok'    { @('#E3F5E8', '#248A3D', 0xE930) }
+        'warn'  { @('#FFF4E0', '#B25000', 0xE7BA) }
+        'err'   { @('#FDECEB', '#D70015', 0xEA39) }
+        default { @('#EBEBF0', '#6E6E73', 0xE946) }
     }
     $ctl.bdStatus.Background      = $script:Converter.ConvertFromString($style[0])
     $ctl.txtStatusIcon.Foreground = $script:Converter.ConvertFromString($style[1])
@@ -1851,10 +1977,10 @@ function Get-AdapterInventory([int]$InterfaceIndex = 0) {
             Glyph                = [string][char]$(if ($isVpn) { $glyphs.Vpn } else { $glyphs[$kind] })
             StatusText           = $statusText
             IPText               = $ipText
-            StatusBrush          = switch ($status) { 'Up' { '#16A34A' } 'Disabled' { '#D93025' } default { '#9AA0A6' } }
-            IconBg               = if ($up) { '#E8F0FE' } else { '#F1F3F4' }
-            IconFg               = if ($up) { '#0B57D0' } else { '#80868B' }
-            CableBrush           = if ($up) { '#34A853' } else { '#C4C9D0' }
+            StatusBrush          = switch ($status) { 'Up' { '#34C759' } 'Disabled' { '#FF3B30' } default { '#8E8E93' } }
+            IconBg               = if ($up) { '#0A84FF' } else { '#E5E5EA' }
+            IconFg               = if ($up) { '#FFFFFF' } else { '#8E8E93' }
+            CableBrush           = if ($up) { '#34C759' } else { '#C7C7CC' }
             Tooltip              = "$($a.InterfaceDescription)`nMAC $mac"
             Cached               = $false   # $true = drawn from last session's cache, faded until the live scan lands
         }
@@ -2331,7 +2457,7 @@ function Read-InventoryCache {
             $_.Dns = @($_.Dns | Where-Object { $_ }); $_.AllIPv4 = @($_.AllIPv4 | Where-Object { $_ })
             $_.Cached      = $true
             $_.StatusText  = 'Last known - checking...'
-            $_.StatusBrush = '#B0B5BC'; $_.IconBg = '#F1F3F4'; $_.IconFg = '#9AA0A6'; $_.CableBrush = '#D5D9DE'
+            $_.StatusBrush = '#C7C7CC'; $_.IconBg = '#E5E5EA'; $_.IconFg = '#8E8E93'; $_.CableBrush = '#D1D1D6'
             $_.DefaultRouteMetric = $null
             $_
         })
@@ -2521,6 +2647,32 @@ function Step-SmoothScroll {
     if ($script:SmoothTargets.Count -eq 0) { $script:SmoothTimer.Stop() }
 }
 
+# Scroll edge effect: a short fade into the page colour where content continues, instead of a
+# hard divider line.
+function Update-ScrollEdges($Viewer, $Top, $Bottom) {
+    $Top.Visibility    = if ($Viewer.VerticalOffset -gt 1) { 'Visible' } else { 'Collapsed' }
+    $Bottom.Visibility = if ($Viewer.VerticalOffset -lt $Viewer.ScrollableHeight - 1) { 'Visible' } else { 'Collapsed' }
+}
+
+# Page navigation keeps a sense of place: the adapter page slides in from the right, home comes
+# back from the left (320 ms, ease-out, no overshoot). The opacity animation is dropped when it
+# ends (FillBehavior Stop) so text gets ClearType back. With Windows animation effects off
+# (reduced motion) pages simply switch.
+function Start-PageTransition($Page, [int]$Direction) {
+    if (-not [System.Windows.SystemParameters]::ClientAreaAnimation) { return }
+    $ease = New-Object System.Windows.Media.Animation.ExponentialEase
+    $ease.EasingMode = 'EaseOut'; $ease.Exponent = 5
+    $dur = New-Object System.Windows.Duration([TimeSpan]::FromMilliseconds(320))
+    $move = New-Object System.Windows.Media.TranslateTransform
+    $Page.RenderTransform = $move
+    $slide = New-Object System.Windows.Media.Animation.DoubleAnimation([double](40 * $Direction), [double]0, $dur)
+    $slide.EasingFunction = $ease
+    $fade = New-Object System.Windows.Media.Animation.DoubleAnimation([double]0, [double]1, (New-Object System.Windows.Duration([TimeSpan]::FromMilliseconds(220))))
+    $fade.FillBehavior = 'Stop'
+    $move.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $slide)
+    $Page.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fade)
+}
+
 function Invoke-ButtonClick($b) {
     $b.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
 }
@@ -2533,7 +2685,7 @@ function Get-SelectedAdapter {
 
 function Set-ScanState([string]$Text, [switch]$Busy) {
     $ctl.txtScanState.Text = $Text
-    $ctl.txtScanGlyph.Foreground = $script:Converter.ConvertFromString($(if ($Busy) { '#0067C0' } else { '#9AA0A6' }))
+    $ctl.txtScanGlyph.Foreground = $script:Converter.ConvertFromString($(if ($Busy) { '#0071E3' } else { '#8E8E93' }))
 }
 
 function Start-InventoryRefresh([switch]$Quiet) {
@@ -2637,8 +2789,10 @@ function Show-Home([switch]$Force) {
     if (-not $Force -and $script:FormDirty -and -not (Confirm-Action 'Discard the changes you made in the form?')) { return }
     $script:SelectedIdx = 0
     $script:FormDirty = $false
+    $wasPage = $ctl.pnlConfig.Visibility -eq 'Visible'
     $ctl.pnlConfig.Visibility = 'Collapsed'
     $ctl.pnlHome.Visibility   = 'Visible'
+    if ($wasPage) { Start-PageTransition $ctl.pnlHome -1 }
 }
 
 function Open-AdapterPage($a) {
@@ -2655,9 +2809,11 @@ function Open-AdapterPage($a) {
     Update-IcsCard
     Start-IcsRefresh
     Show-Adapter $a
+    $wasHome = $ctl.pnlHome.Visibility -eq 'Visible'
     $ctl.pnlHome.Visibility   = 'Collapsed'
     $ctl.pnlConfig.Visibility = 'Visible'
     $ctl.svForm.ScrollToTop()
+    if ($wasHome) { Start-PageTransition $ctl.pnlConfig 1 }
 }
 
 function Update-AdapterHeader($a) {
@@ -2667,7 +2823,7 @@ function Update-AdapterHeader($a) {
     $ctl.txtAdapterGlyph.Foreground = $script:Converter.ConvertFromString($a.IconFg)
     $ctl.elStatusDot.Fill           = $script:Converter.ConvertFromString($a.StatusBrush)
     $ctl.txtStatusPill.Text         = $a.StatusText
-    $ctl.bdStatusPill.Background    = $script:Converter.ConvertFromString($(if ($a.Status -eq 'Up') { '#E6F4EA' } else { '#F1F3F4' }))
+    $ctl.bdStatusPill.Background    = $script:Converter.ConvertFromString($(if ($a.Status -eq 'Up') { '#E3F5E8' } else { '#EFEFF4' }))
     $mode = if ($a.Dhcp) { 'automatic address (DHCP)' } else { 'manual address' }
     $ip   = if ($a.IPv4) { "$($a.IPv4)/$($a.PrefixLength)" } else { 'no IPv4 address' }
     $ctl.txtDetail.Text = "$($a.Type)  $script:Dot  $mode  $script:Dot  $ip"
@@ -2680,11 +2836,11 @@ function Update-AdapterHeader($a) {
 
     if ($a.Status -eq 'Disabled') {
         $ctl.txtToggleEnable.Text = 'Enable'
-        $ctl.txtToggleGlyph.Foreground = $script:Converter.ConvertFromString('#137333')
+        $ctl.txtToggleGlyph.Foreground = $script:Converter.ConvertFromString('#248A3D')
         $ctl.btnToggleEnable.ToolTip = 'Turn the adapter back on'
     } else {
         $ctl.txtToggleEnable.Text = 'Disable'
-        $ctl.txtToggleGlyph.Foreground = $script:Converter.ConvertFromString('#C5221F')
+        $ctl.txtToggleGlyph.Foreground = $script:Converter.ConvertFromString('#FF3B30')
         $ctl.btnToggleEnable.ToolTip = 'Turn the adapter off (asks first)'
     }
     $ctl.btnRenew.IsEnabled = $a.Dhcp -and $a.Status -eq 'Up'
@@ -2692,11 +2848,11 @@ function Update-AdapterHeader($a) {
 
 function Set-PingResult([string]$Text, [string]$Type = 'info') {
     $style = switch ($Type) {
-        'ok'   { @('#E6F4EA', '#137333', 0xE930) }
-        'warn' { @('#FEF7E0', '#B45309', 0xE7BA) }
-        'err'  { @('#FDECEA', '#B3261E', 0xEA39) }
-        'busy' { @('#EEF4FC', '#0067C0', 0xE895) }
-        default { @('#F6F8FA', '#6B7280', 0xE946) }
+        'ok'   { @('#E3F5E8', '#248A3D', 0xE930) }
+        'warn' { @('#FFF4E0', '#B25000', 0xE7BA) }
+        'err'  { @('#FDECEB', '#D70015', 0xEA39) }
+        'busy' { @('#EAF2FD', '#0071E3', 0xE895) }
+        default { @('Transparent', '#8E8E93', 0xE946) }
     }
     $ctl.bdPingResult.Background = $script:Converter.ConvertFromString($style[0])
     $ctl.txtPingGlyph.Foreground = $script:Converter.ConvertFromString($style[1])
@@ -3068,14 +3224,14 @@ function Update-IcsCard {
     $s = $script:IcsState
     $conv = $script:Converter
     if (-not $s) {
-        $ctl.txtIcsPill.Text = 'Checking...'; $ctl.elIcsDot.Fill = $conv.ConvertFromString('#9AA0A6')
+        $ctl.txtIcsPill.Text = 'Checking...'; $ctl.elIcsDot.Fill = $conv.ConvertFromString('#8E8E93')
         $ctl.btnIcsStart.IsEnabled = $false
         return
     }
     $active = $s.Available -and $s.PublicIdx -and $s.PrivateIdx
     $pub = Get-AdapterByIdx $s.PublicIdx; $priv = Get-AdapterByIdx $s.PrivateIdx
 
-    $pill = if (-not $s.Available) { @('Unavailable', '#F1F3F4', '#9AA0A6') } elseif ($active) { @('On', '#E6F4EA', '#16A34A') } else { @('Off', '#F1F3F4', '#9AA0A6') }
+    $pill = if (-not $s.Available) { @('Unavailable', '#EFEFF4', '#8E8E93') } elseif ($active) { @('On', '#E3F5E8', '#34C759') } else { @('Off', '#EFEFF4', '#8E8E93') }
     $ctl.txtIcsPill.Text = $pill[0]
     $ctl.bdIcsPill.Background = $conv.ConvertFromString($pill[1])
     $ctl.elIcsDot.Fill = $conv.ConvertFromString($pill[2])
@@ -3564,6 +3720,8 @@ Initialize-Pickers
 Update-UndoButton
 Enable-SmoothScroll $ctl.svForm
 Enable-SmoothScroll $ctl.svSide
+$ctl.svForm.Add_ScrollChanged({ Update-ScrollEdges $ctl.svForm $ctl.fdFormTop $ctl.fdFormBottom })
+$ctl.svSide.Add_ScrollChanged({ Update-ScrollEdges $ctl.svSide $ctl.fdSideTop $ctl.fdSideBottom })
 
 # "Display" text (set on the window) is the sharpest at 1:1, but turns blurry when scaled. The home
 # stage shrinks on small windows, so it switches to "Ideal" text only while it is actually scaled.

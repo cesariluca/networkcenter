@@ -54,10 +54,16 @@ Windows only (Windows 10/11, Windows PowerShell 5.1 — not pwsh; WPF needs 5.1 
 `NetworkControlCenter.ps1` is organized into numbered sections (`# N. SECTION` banners):
 
 1. **Self-elevation** (see above).
-2. **Assemblies & app identity** — WPF, plus `Set-AppIdentity`: sets the process AppUserModelID via
-   a Reflection.Emit P/Invoke stub (not `Add-Type`, which would start the C# compiler on every
-   launch). It must equal the ID the installer writes into the shortcut (`$script:AppId` /
-   `$appId` in `Install-Shortcut.ps1`), or the window won't group under the pinned taskbar icon.
+2. **Assemblies, DPI & app identity** — native calls go through one Reflection.Emit P/Invoke stub
+   (`New-NativeStub`; not `Add-Type`, which would start the C# compiler on every launch).
+   - **Per-monitor DPI**: powershell.exe has no DPI manifest, so Windows treats it as DPI-unaware
+     and *bitmap-stretches* the window on 125/150% screens - that, not fonts or shadows, is what
+     makes all text blurry. Before WPF loads, the script sets the WPF AppContext switches
+     (`DoNotScaleForDpiChanges` etc. = false) and calls `SetProcessDpiAwarenessContext(-4)`
+     (per-monitor v2). Keep both before any window exists.
+   - `Set-AppIdentity` sets the process AppUserModelID. It must equal the ID the installer writes
+     into the shortcut (`$script:AppId` / `$appId` in `Install-Shortcut.ps1`), or the window won't
+     group under the pinned taskbar icon.
 3. **UI (XAML)** — one single-quoted here-string. Styles/templates live in `Window.Resources`
    (buttons, action tiles, text boxes whose `Tag` is the placeholder, editable ComboBox template,
    slim scrollbars, segmented control, switch, adapter tiles, profile chips, the keyboard
@@ -68,6 +74,14 @@ Windows only (Windows 10/11, Windows PowerShell 5.1 — not pwsh; WPF needs 5.1 
    `DataTemplate`s bound to object properties (brushes bound as `#RRGGBB` strings; `Cached` fades a
    tile). Icons are Segoe Fluent/MDL2 glyphs - check new code points by rendering them, many are
    empty. Named elements go into the `$ctl` hashtable via `$controlNames`.
+   Visual language (v2.4, Apple-style): grey page `#F2F2F7`, white borderless cards, accent
+   `#0071E3` only on clickable things, a coloured `CardIcon` square per card. Motion lives in the
+   templates: shared `PressIn`/`PressOut`/`HoverIn`/`HoverOut` storyboards target template parts
+   named `root` (ScaleTransform), `ov` and `pv` - a template using them needs all three. Storyboards
+   have no `From`, so they are interruptible. Page changes slide via `Start-PageTransition`
+   (skipped when Windows animation effects are off); scroll areas get fades from
+   `Update-ScrollEdges` instead of divider lines. Never put an Effect, OpacityMask or held
+   Opacity < 1 on an element that contains text (it loses ClearType).
 4. **Helpers**
    - Pure validation/subnet math: `Test-IPv4` (strict), `Resolve-Prefix` (takes `/24`,
      `255.255.255.0`, or picker text — only the first token counts), `Get-SubnetSummary`,
