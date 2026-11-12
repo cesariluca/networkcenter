@@ -177,11 +177,16 @@ if (-not $isAdmin) {
     if ($Uninstall) { $childArgs += '-Uninstall' }
     Write-Host 'Asking for administrator rights (installing to Program Files)...'
     try {
-        $p = Start-Process -FilePath $psExe -ArgumentList $childArgs -Verb RunAs -Wait -PassThru -WindowStyle Hidden
+        $p = Start-Process -FilePath $psExe -ArgumentList $childArgs -Verb RunAs -PassThru -WindowStyle Hidden
     } catch {
         Write-Host 'Cancelled - nothing was changed.' -ForegroundColor Yellow
         exit 1
     }
+    # Wait for the elevated installer itself only. Start-Process -Wait would also wait for everything
+    # it starts - including the app it opens at the end - so the installer would hang until the app
+    # is closed. Touching .Handle first keeps the exit code readable after the process ends.
+    $null = $p.Handle
+    $p.WaitForExit()
     if (Test-Path $log) { Get-Content $log | ForEach-Object { Write-Host $_ }; Remove-Item $log -ErrorAction SilentlyContinue }
     if ($p.ExitCode -ne 0) { Write-Host 'Installation failed - see above.' -ForegroundColor Red; exit 1 }
     Update-UserProfile
