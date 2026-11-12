@@ -144,8 +144,9 @@ Windows only (Windows 10/11, Windows PowerShell 5.1 — not pwsh; WPF needs 5.1 
   parameters; never interpolate user input into `-Script`.
 - **Public repo hygiene.** No real MACs, hostnames, internal IPs or emails in code, tests or commit
   messages (use RFC 5737 / private-range examples and dummy MACs like `00-1A-2B-3C-4D-5E`).
-  `*.json`, logs and backups are gitignored because profiles/caches hold real site data. Commits use
-  the GitHub no-reply address.
+  `*.json`, logs and backups are gitignored because profiles/caches hold real site data.
+- **Identity.** The repo belongs to the GitHub account **cesariluca**; commits are
+  `cesariluca <luca.cesari@omniaccess.com>` (work email on purpose - don't switch to a no-reply address).
 
 - **The UI thread never calls networking cmdlets** (module import would freeze it for seconds) and
   never does blocking network I/O — go through `Start-WorkJob`. Raw CIM reads belong in the worker
