@@ -50,7 +50,8 @@ $HelperFunctions = @(
     'ConvertTo-NccProfile', 'Read-ProfileFile', 'Write-JsonFileAtomic',
     'Get-SubnetSummary', 'Get-QuickConfigForDevice', 'Format-LinkSpeed', 'Format-MacAddress',
     'Get-AdapterKind', 'ConvertTo-VlanInfo', 'Format-ProfileSummary',
-    'Get-AdapterInventory', 'Get-VlanInventory', 'New-WorkerPool'
+    'Get-AdapterInventory', 'Get-VlanInventory', 'New-WorkerPool',
+    'Assert-IcsScopeAddress', 'Get-IcsConflict'
 )
 $fnAsts = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
 foreach ($name in $HelperFunctions) {
@@ -197,6 +198,27 @@ Assert-Equal 24 (Resolve-Prefix '/24   255.255.255.0   254 hosts') 'picker text 
 $c = Test-ConfigInput -Mode Static -Ip '10.1.1.5' -Mask '/24' -Dns1 '8.8.8.8   Google' -Mtu '1492   PPPoE'
 Assert-Equal '8.8.8.8|1492' "$($c.Dns -join ',')|$($c.Mtu)" 'DNS / MTU picker text with description parses'
 
+Write-Host "Internet sharing (ICS)"
+Assert-Equal '192.168.137.1' (Assert-IcsScopeAddress '192.168.137.1') 'Windows default address accepted'
+Assert-Equal '10.0.0.1' (Assert-IcsScopeAddress ' 010.0.0.001 ') 'address normalized'
+Assert-Equal '172.31.5.1' (Assert-IcsScopeAddress '172.31.5.1') '172.16/12 accepted'
+Assert-Throws { Assert-IcsScopeAddress '8.8.8.1' } 'not a private address' 'public address rejected'
+Assert-Throws { Assert-IcsScopeAddress '172.32.0.1' } 'not a private address' 'just outside 172.16/12 rejected'
+Assert-Throws { Assert-IcsScopeAddress '192.168.1.0' } 'between 1 and 254' '.0 rejected'
+Assert-Throws { Assert-IcsScopeAddress '192.168.1.255' } 'between 1 and 254' '.255 rejected'
+Assert-Throws { Assert-IcsScopeAddress '192.168.1' } 'Type the address' 'incomplete address rejected'
+$adapters = @(
+    [PSCustomObject]@{ Name = 'Wi-Fi'; InterfaceIndex = 23; IPv4 = '192.168.1.38'; PrefixLength = 24 }
+    [PSCustomObject]@{ Name = 'Ethernet'; InterfaceIndex = 18; IPv4 = '192.168.137.1'; PrefixLength = 24 }
+    [PSCustomObject]@{ Name = 'Corp VPN'; InterfaceIndex = 13; IPv4 = '10.20.0.5'; PrefixLength = 16 }
+    [PSCustomObject]@{ Name = 'Down'; InterfaceIndex = 5; IPv4 = ''; PrefixLength = $null }
+)
+Assert-Equal 'Wi-Fi' (Get-IcsConflict '192.168.1.1' $adapters 18).Name 'clash with the network being shared from'
+Assert-Equal $true ($null -eq (Get-IcsConflict '192.168.137.1' $adapters 18)) 'the shared port itself is not a clash'
+Assert-Equal 'Corp VPN' (Get-IcsConflict '10.20.99.1' $adapters 18).Name 'clash inside a wider (/16) network'
+Assert-Equal $true ($null -eq (Get-IcsConflict '10.21.0.1' $adapters 18)) 'neighbouring network is fine'
+Assert-Equal $true ($null -eq (Get-IcsConflict '192.168.2.1' $adapters 18)) 'free /24 is fine'
+
 Write-Host "Adapter classification / formatting"
 Assert-Equal 'WiFi'      (Get-AdapterKind 9 $false 'Wi-Fi' 'Intel(R) Wi-Fi 6E AX211') 'Wi-Fi'
 Assert-Equal 'Ethernet'  (Get-AdapterKind 14 $false 'Ethernet' 'Intel(R) Ethernet I219-LM') 'built-in Ethernet'
@@ -235,6 +257,10 @@ $txParams = @((Get-Command Invoke-ConfigTransaction).Parameters.Keys | Where-Obj
 Assert-Equal 'Idx,Action,Cfg,Snapshot,VlanTarget' ($txParams -join ',') 'config transaction takes no adapter name / VLAN keyword from the caller'
 $actParams = @((Get-Command Invoke-AdapterAction).Parameters.Keys | Where-Object { $_ -notin [System.Management.Automation.PSCmdlet]::CommonParameters })
 Assert-Equal 'Action,Idx' ($actParams -join ',') 'adapter actions take an interface index, not a name'
+$icsParams = @((Get-Command Invoke-IcsChange).Parameters.Keys | Where-Object { $_ -notin [System.Management.Automation.PSCmdlet]::CommonParameters })
+Assert-Equal 'Action,PublicIdx,PrivateIdx,ScopeAddress,Persist' ($icsParams -join ',') 'sharing changes take interface indexes, not names'
+$st = Get-IcsState
+Assert-Equal $true ($st.ScopeAddress -and ($st.Available -or $st.Error)) "sharing state readable without throwing (available=$($st.Available))"
 Assert-Throws { Invoke-AdapterAction 'Restart' 999999 } 'no longer present' 'unknown interface index is refused before anything runs'
 
 $sw = [Diagnostics.Stopwatch]::StartNew()

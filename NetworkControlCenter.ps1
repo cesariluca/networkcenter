@@ -23,7 +23,7 @@
 =====================================================================
 #>
 
-$script:AppVersion = '2.2.0'
+$script:AppVersion = '2.3.0'
 $script:AppId      = 'FieldTools.NetworkControlCenter'
 
 # ---------------------------------------------------------------------
@@ -1164,6 +1164,113 @@ $xaml = @'
               </StackPanel>
             </Border>
 
+            <!-- Internet sharing (Windows ICS) -->
+            <Border x:Name="bdIcs" Style="{StaticResource Card}">
+              <StackPanel>
+                <Grid Margin="0,0,0,4">
+                  <StackPanel Orientation="Horizontal">
+                    <Border Style="{StaticResource CardIcon}"><TextBlock Text="&#xE704;" Style="{StaticResource Glyph}" Foreground="#0067C0" HorizontalAlignment="Center"/></Border>
+                    <TextBlock Text="Internet sharing" Style="{StaticResource CardTitle}"/>
+                  </StackPanel>
+                  <Border x:Name="bdIcsPill" HorizontalAlignment="Right" VerticalAlignment="Center" CornerRadius="10" Padding="9,2" Background="#F1F3F4">
+                    <StackPanel Orientation="Horizontal">
+                      <Ellipse x:Name="elIcsDot" Width="7" Height="7" Fill="#9AA0A6" VerticalAlignment="Center"/>
+                      <TextBlock x:Name="txtIcsPill" Text="Off" FontSize="11.5" Margin="5,0,0,0"/>
+                    </StackPanel>
+                  </Border>
+                </Grid>
+                <TextBlock x:Name="txtIcsHint" Style="{StaticResource Hint}" Margin="0,0,0,12"
+                           Text="Give devices plugged into one adapter internet from another. Windows then hands out their addresses (DHCP)."/>
+
+                <!-- Choosing the pair (when not sharing) -->
+                <StackPanel x:Name="pnlIcsSetup">
+                  <StackPanel Style="{StaticResource FieldHead}">
+                    <TextBlock Text="&#xE774;" Style="{StaticResource LabelIcon}"/>
+                    <TextBlock Text="Internet comes from" Style="{StaticResource Label}"/>
+                  </StackPanel>
+                  <ComboBox x:Name="cmbIcsFrom" IsReadOnly="True" FontFamily="Segoe UI" FontSize="13" Margin="0,0,0,10"/>
+                  <StackPanel Style="{StaticResource FieldHead}">
+                    <TextBlock Text="&#xE839;" Style="{StaticResource LabelIcon}"/>
+                    <TextBlock Text="Share it to (devices plug in here)" Style="{StaticResource Label}"/>
+                  </StackPanel>
+                  <ComboBox x:Name="cmbIcsTo" IsReadOnly="True" FontFamily="Segoe UI" FontSize="13" Margin="0,0,0,12"/>
+                </StackPanel>
+
+                <!-- The running pair -->
+                <Border x:Name="pnlIcsActive" Background="#E6F4EA" CornerRadius="8" Padding="12,10" Margin="0,0,0,12" Visibility="Collapsed">
+                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                    <TextBlock x:Name="txtIcsFromGlyph" Style="{StaticResource Glyph}" Foreground="#137333" Margin="0,0,6,0"/>
+                    <TextBlock x:Name="txtIcsFromName" FontWeight="SemiBold" Foreground="#0D5222"/>
+                    <TextBlock Text="&#xE72A;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#137333" Margin="10,0"/>
+                    <TextBlock x:Name="txtIcsToGlyph" Style="{StaticResource Glyph}" Foreground="#137333" Margin="0,0,6,0"/>
+                    <TextBlock x:Name="txtIcsToName" FontWeight="SemiBold" Foreground="#0D5222"/>
+                  </StackPanel>
+                </Border>
+
+                <!-- DHCP server settings -->
+                <StackPanel Style="{StaticResource FieldHead}">
+                  <TextBlock Text="&#xE968;" Style="{StaticResource LabelIcon}"/>
+                  <TextBlock Text="This PC's address on the shared port" Style="{StaticResource Label}"/>
+                </StackPanel>
+                <ComboBox x:Name="cmbIcsScope" FontFamily="Consolas" FontSize="14"/>
+                <Border Background="#F6F8FA" CornerRadius="6" Padding="10,8" Margin="0,8,0,10">
+                  <TextBlock x:Name="txtIcsDhcpInfo" Style="{StaticResource Hint}"/>
+                </Border>
+                <CheckBox x:Name="chkIcsPersist" Style="{StaticResource Switch}" Content="Keep sharing after a restart" Margin="0,0,0,12"
+                          ToolTip="Windows normally stops sharing when the PC restarts"/>
+                <Border x:Name="bdIcsError" Background="#FDECEA" CornerRadius="6" Padding="10,8" Margin="0,0,0,10" Visibility="Collapsed">
+                  <TextBlock x:Name="txtIcsError" Foreground="#8C1D18" TextWrapping="Wrap" FontSize="12"/>
+                </Border>
+                <StackPanel Orientation="Horizontal">
+                  <Button x:Name="btnIcsStart" Style="{StaticResource BtnAccent}" Padding="14,0">
+                    <StackPanel Orientation="Horizontal">
+                      <TextBlock x:Name="txtIcsStartGlyph" Text="&#xE768;" Style="{StaticResource Glyph}" FontSize="12"/>
+                      <TextBlock x:Name="txtIcsStart" Text="Start sharing" Margin="7,0,0,0"/>
+                    </StackPanel>
+                  </Button>
+                  <Button x:Name="btnIcsStop" Style="{StaticResource Btn}" Margin="8,0,0,0" Padding="12,0" Visibility="Collapsed"
+                          ToolTip="Stops sharing and puts the shared port back on automatic (DHCP)">
+                    <StackPanel Orientation="Horizontal">
+                      <TextBlock Text="&#xE71A;" Style="{StaticResource Glyph}" FontSize="12" Foreground="#C5221F"/>
+                      <TextBlock Text="Stop sharing" Margin="7,0,0,0"/>
+                    </StackPanel>
+                  </Button>
+                </StackPanel>
+
+                <!-- Devices on the shared port -->
+                <StackPanel x:Name="pnlIcsClients" Margin="0,16,0,0" Visibility="Collapsed">
+                  <Grid Margin="0,0,0,6">
+                    <StackPanel Orientation="Horizontal">
+                      <TextBlock Text="&#xE772;" Style="{StaticResource LabelIcon}"/>
+                      <TextBlock Text="Devices on the shared port" Style="{StaticResource Label}"/>
+                    </StackPanel>
+                    <Button x:Name="btnIcsRefresh" Style="{StaticResource BtnGhost}" HorizontalAlignment="Right" Height="26" Padding="6,0" ToolTip="Check again">
+                      <TextBlock Text="&#xE72C;" Style="{StaticResource Glyph}" FontSize="11"/>
+                    </Button>
+                  </Grid>
+                  <ItemsControl x:Name="icIcsClients">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Border Background="#F6F8FA" CornerRadius="6" Padding="10,6" Margin="0,0,0,4">
+                          <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <TextBlock Text="&#xE839;" FontFamily="{StaticResource Icons}" FontSize="13" Foreground="#0067C0" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <StackPanel Grid.Column="1">
+                              <TextBlock Text="{Binding Ip}" FontFamily="Consolas" FontSize="13" FontWeight="SemiBold"/>
+                              <TextBlock FontSize="11" Foreground="#6B7280">
+                                <Run Text="{Binding Mac, Mode=OneWay}" FontFamily="Consolas"/><Run Text="  "/><Run Text="{Binding Seen, Mode=OneWay}"/>
+                              </TextBlock>
+                            </StackPanel>
+                          </Grid>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <TextBlock x:Name="txtIcsNoClients" Style="{StaticResource Hint}" Text="No devices seen yet - plug one in and set it to automatic (DHCP)."/>
+                </StackPanel>
+              </StackPanel>
+            </Border>
+
             <Border Style="{StaticResource Card}">
               <StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
@@ -1269,6 +1376,10 @@ $controlNames = @(
     'txtScreenGlyph','txtPingHomeHint','bdPingResult','txtPingGlyph','txtToggleGlyph',
     'txtInfoHw','txtInfoMac','txtInfoSpeed','txtInfoType','txtInfoIndex','btnShowSave','pnlSaveProfile','btnCancelSave',
     'grdCurrent','txtCurIp','txtCurMask','txtCurGw','txtCurDns',
+    'bdIcs','bdIcsPill','elIcsDot','txtIcsPill','txtIcsHint','pnlIcsSetup','cmbIcsFrom','cmbIcsTo','pnlIcsActive',
+    'txtIcsFromGlyph','txtIcsFromName','txtIcsToGlyph','txtIcsToName','cmbIcsScope','txtIcsDhcpInfo','chkIcsPersist',
+    'bdIcsError','txtIcsError','btnIcsStart','txtIcsStartGlyph','txtIcsStart','btnIcsStop','pnlIcsClients',
+    'btnIcsRefresh','icIcsClients','txtIcsNoClients',
     'pnlHome','icWired','txtNoWired','icWireless','txtNoWireless','pnlVirtual','icVirtual',
     'txtHostName','txtOnline','pnlHomeTools','txtPingHome','btnPingHome','btnFlushDns','btnClearArp','btnOpenData',
     'pnlConfig','btnBack','bdAdapterIcon','txtAdapterGlyph','txtAdapterName','bdStatusPill','elStatusDot',
@@ -1679,6 +1790,7 @@ function Get-AdapterInventory([int]$InterfaceIndex = 0) {
         [PSCustomObject]@{
             Name                 = [string]$a.Name
             InterfaceIndex       = $idx
+            InterfaceGuid        = "$($a.InterfaceGuid)".ToUpper()
             InterfaceDescription = [string]$a.InterfaceDescription
             Status               = $status
             MacAddress           = $mac
@@ -1823,6 +1935,8 @@ function Invoke-ConfigTransaction {
             'Dhcp'    { Set-InterfaceDhcp $Idx }
             'Restore' {
                 if ([int]$Snapshot.InterfaceIndex -ne $Idx) { throw 'The undo snapshot belongs to a different adapter.' }
+                # Undoing "start sharing": stop sharing first, or Windows would keep forcing its address.
+                if ($Snapshot.UndoIcs) { Disable-IcsAll }
                 Restore-AdapterConfig $Snapshot
             }
             default   { throw "Unknown action '$Action'." }
@@ -1906,13 +2020,161 @@ function Invoke-PingTest([string]$Target, [int]$Count = 4, [int]$TimeoutMs = 100
     }
 }
 
+# ---- internet connection sharing (ICS) --------------------------------
+# Windows' own "share this connection" feature: one adapter (public) shares its internet with another
+# (private); Windows then gives the private adapter a fixed address and runs a DHCP server + DNS proxy
+# on it. What Windows lets you configure is limited and the UI says so: the pair, the address of the
+# PC on the private side (ScopeAddress; always a /24, devices get the rest of it, with the PC as
+# gateway and DNS), and whether sharing survives a reboot. Controlled through the HNetCfg COM API,
+# which needs administrator rights.
+
+# Address the PC takes on the shared port. Private ranges only, and not .0/.255 of its /24.
+function Assert-IcsScopeAddress([string]$Address) {
+    if (-not (Test-IPv4 $Address)) { throw 'Type the address this PC should have on the shared port, e.g. 192.168.137.1.' }
+    $a = ConvertTo-NormalizedIPv4 $Address
+    $o = @($a.Split('.') | ForEach-Object { [int]$_ })
+    $isPrivate = $o[0] -eq 10 -or ($o[0] -eq 172 -and $o[1] -ge 16 -and $o[1] -le 31) -or ($o[0] -eq 192 -and $o[1] -eq 168)
+    if (-not $isPrivate) { throw "$a is not a private address - use one like 192.168.137.1, 192.168.1.1 or 10.0.0.1." }
+    if ($o[3] -eq 0 -or $o[3] -eq 255) { throw "$a can't be used - the last number must be between 1 and 254." }
+    return $a
+}
+
+function Get-IcsConnections {
+    $m = New-Object -ComObject HNetCfg.HNetShare
+    if (-not $m.SharingInstalled) { throw 'Internet sharing is not available (it needs administrator rights and the Internet Connection Sharing service).' }
+    foreach ($c in @($m.EnumEveryConnection)) {
+        $p = $m.NetConnectionProps.Invoke($c)
+        $cfg = $null
+        try { $cfg = $m.INetSharingConfigurationForINetConnection.Invoke($c) } catch { }
+        $enabled = [bool]($cfg -and $cfg.SharingEnabled)
+        [PSCustomObject]@{
+            Guid = "$($p.Guid)".ToUpper(); Name = "$($p.Name)"; Config = $cfg; Enabled = $enabled
+            Role = if (-not $enabled) { $null } elseif ($cfg.SharingConnectionType -eq 0) { 'Public' } else { 'Private' }
+        }
+    }
+}
+
+# Devices recently seen on the shared port (neighbor cache), excluding the PC's own address.
+function Get-IcsClients([int]$Idx, [string]$Exclude) {
+    Get-CimInstance -Namespace 'root/StandardCimv2' -ClassName MSFT_NetNeighbor -Filter "InterfaceIndex=$Idx AND AddressFamily=2" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.State -in 2, 3, 4, 5 -and $_.IPAddress -ne $Exclude -and (Test-IPv4 $_.IPAddress) -and
+            (Test-UsableIPv4 $_.IPAddress) -and $_.IPAddress -notmatch '\.255$' -and
+            $_.LinkLayerAddress -and $_.LinkLayerAddress -notmatch '^(FF-?){5}FF$|^0+$'
+        } |
+        Sort-Object { ConvertTo-IPv4Int $_.IPAddress } |
+        ForEach-Object {
+            [PSCustomObject]@{ Ip = "$($_.IPAddress)"; Mac = (Format-MacAddress $_.LinkLayerAddress); Seen = $(if ($_.State -eq 5) { 'active now' } else { 'seen recently' }) }
+        }
+}
+
+function Get-IcsState {
+    $s = [PSCustomObject]@{ Available = $false; Error = $null; PublicIdx = 0; PrivateIdx = 0; ScopeAddress = '192.168.137.1'; Persist = $false; Clients = @() }
+    $scope = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters' -Name ScopeAddress -ErrorAction SilentlyContinue).ScopeAddress
+    if (Test-IPv4 $scope) { $s.ScopeAddress = "$scope" }
+    $s.Persist = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\SharedAccess' -Name EnableRebootPersistConnection -ErrorAction SilentlyContinue).EnableRebootPersistConnection -eq 1
+    try {
+        $idxByGuid = @{}
+        foreach ($a in Get-CimInstance -Namespace 'root/StandardCimv2' -ClassName MSFT_NetAdapter -ErrorAction SilentlyContinue) {
+            $idxByGuid["$($a.InterfaceGuid)".ToUpper()] = [int]$a.InterfaceIndex
+        }
+        foreach ($c in Get-IcsConnections) {
+            if ($c.Role -eq 'Public')  { $s.PublicIdx  = [int]$idxByGuid[$c.Guid] }
+            if ($c.Role -eq 'Private') { $s.PrivateIdx = [int]$idxByGuid[$c.Guid] }
+        }
+        $s.Available = $true
+    } catch { $s.Error = "$($_.Exception.Message)".Trim() }
+    if ($s.PrivateIdx) { $s.Clients = @(Get-IcsClients $s.PrivateIdx $s.ScopeAddress) }
+    return $s
+}
+
+# Writes the shared-port address and the "survive reboot" flag. Returns $true if the address changed.
+function Set-IcsSettings([string]$ScopeAddress, [bool]$Persist) {
+    $params = 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters'
+    $old = (Get-ItemProperty $params -Name ScopeAddress -ErrorAction SilentlyContinue).ScopeAddress
+    Set-ItemProperty $params -Name ScopeAddress -Value $ScopeAddress
+    Set-ItemProperty $params -Name ScopeAddressBackup -Value $ScopeAddress
+    $persistKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\SharedAccess'
+    if (-not (Test-Path $persistKey)) { New-Item $persistKey -Force | Out-Null }
+    Set-ItemProperty $persistKey -Name EnableRebootPersistConnection -Value ([int]$Persist) -Type DWord
+    return ("$old" -ne $ScopeAddress)
+}
+
+function Disable-IcsAll {
+    foreach ($c in @(Get-IcsConnections | Where-Object { $_.Enabled })) { $c.Config.DisableSharing() }
+}
+
+# Windows allows one sharing pair at a time: stop any existing one, then share public -> private.
+# A changed ScopeAddress only takes effect after the sharing service restarts.
+function Enable-IcsPair([int]$PublicIdx, [int]$PrivateIdx, [bool]$RestartService) {
+    $svc = Get-Service SharedAccess -ErrorAction Stop
+    if ($svc.StartType -eq 'Disabled') { Set-Service SharedAccess -StartupType Manual -ErrorAction Stop }
+    $guidByIdx = @{}
+    foreach ($a in Get-CimInstance -Namespace 'root/StandardCimv2' -ClassName MSFT_NetAdapter -ErrorAction SilentlyContinue) {
+        $guidByIdx[[int]$a.InterfaceIndex] = "$($a.InterfaceGuid)".ToUpper()
+    }
+    $pubGuid = $guidByIdx[$PublicIdx]; $privGuid = $guidByIdx[$PrivateIdx]
+    if (-not $pubGuid -or -not $privGuid) { throw 'One of the adapters is no longer present.' }
+    Disable-IcsAll
+    if ($RestartService -and (Get-Service SharedAccess).Status -eq 'Running') { Restart-Service SharedAccess -Force -ErrorAction Stop }
+    $conns = @(Get-IcsConnections)
+    $pub  = $conns | Where-Object { $_.Guid -eq $pubGuid }  | Select-Object -First 1
+    $priv = $conns | Where-Object { $_.Guid -eq $privGuid } | Select-Object -First 1
+    if (-not $pub -or -not $pub.Config)   { throw "Windows can't share the internet connection of that adapter." }
+    if (-not $priv -or -not $priv.Config) { throw "Windows can't share internet onto that adapter." }
+    $pub.Config.EnableSharing(0)    # ICSSHARINGTYPE_PUBLIC
+    $priv.Config.EnableSharing(1)   # ICSSHARINGTYPE_PRIVATE
+}
+
+# One sharing change in the work runspace. Like the other workers it takes interface indexes only.
+#   Start  - share PublicIdx -> PrivateIdx with the given address; Before = the private adapter's
+#            previous settings, so the UI can offer Undo.
+#   Update - change address / reboot persistence of the running share.
+#   Stop   - stop sharing and put the private adapter back on DHCP (Windows leaves it on its
+#            static sharing address otherwise).
+function Invoke-IcsChange {
+    param([string]$Action, [int]$PublicIdx, [int]$PrivateIdx, [string]$ScopeAddress, [bool]$Persist)
+    $r = [PSCustomObject]@{ Ok = $false; Error = $null; Before = $null; After = $null; State = $null }
+    $run = { param($sb) try { & $sb } catch { throw "$($_.Exception.Message)".Trim() } }
+    try {
+        switch ($Action) {
+            'Start' {
+                if (-not $PublicIdx -or -not $PrivateIdx -or $PublicIdx -eq $PrivateIdx) { throw 'Pick two different adapters.' }
+                $scope = Assert-IcsScopeAddress $ScopeAddress
+                $r.Before = @(Get-AdapterInventory -InterfaceIndex $PrivateIdx) | Select-Object -First 1
+                $changed = & $run { Set-IcsSettings $scope $Persist }
+                & $run { Enable-IcsPair $PublicIdx $PrivateIdx $changed }
+            }
+            'Update' {
+                $scope = Assert-IcsScopeAddress $ScopeAddress
+                $cur = Get-IcsState
+                if (-not $cur.PublicIdx -or -not $cur.PrivateIdx) { throw 'Sharing is not active.' }
+                $changed = & $run { Set-IcsSettings $scope $Persist }
+                if ($changed) { & $run { Enable-IcsPair $cur.PublicIdx $cur.PrivateIdx $true } }
+            }
+            'Stop' {
+                $cur = Get-IcsState
+                & $run { Disable-IcsAll }
+                if ($cur.PrivateIdx) { & $run { Set-InterfaceDhcp $cur.PrivateIdx } }
+            }
+            default { throw "Unknown action '$Action'." }
+        }
+        $r.Ok = $true
+    } catch { $r.Error = "$($_.Exception.Message)".Trim() }
+    $r.State = Get-IcsState
+    $r.After = @(Get-AdapterInventory)
+    return $r
+}
+
 # Copied into the background runspaces (see New-WorkerPool).
 $script:WorkerFunctions = @(
     'Test-IPv4', 'ConvertTo-NormalizedIPv4', 'ConvertTo-IPv4Int', 'ConvertFrom-IPv4Int', 'Get-PrefixMaskInt',
-    'Format-LinkSpeed', 'Format-MacAddress', 'Get-AdapterKind', 'ConvertTo-VlanInfo',
+    'Test-UsableIPv4', 'Format-LinkSpeed', 'Format-MacAddress', 'Get-AdapterKind', 'ConvertTo-VlanInfo',
     'Get-AdapterInventory', 'Get-VlanInventory', 'Clear-IPv4Config', 'Set-StaticConfig', 'Set-InterfaceDhcp',
     'Set-InterfaceMtu', 'Set-Vlan', 'Restore-AdapterConfig', 'Invoke-ConfigTransaction',
-    'Invoke-AdapterAction', 'Invoke-PingTest'
+    'Invoke-AdapterAction', 'Invoke-PingTest',
+    'Assert-IcsScopeAddress', 'Get-IcsConnections', 'Get-IcsClients', 'Get-IcsState', 'Set-IcsSettings',
+    'Disable-IcsAll', 'Enable-IcsPair', 'Invoke-IcsChange'
 )
 
 # ---- profiles, cache & change log (UI thread, local files) -----------
@@ -2013,7 +2275,7 @@ function Save-InventoryCache {
         $vlan = @{}
         foreach ($k in $script:VlanCache.Keys) { $vlan[$k] = $script:VlanCache[$k] }
         Write-JsonFileAtomic $script:CachePath ([PSCustomObject]@{
-            Version = 3; Saved = (Get-Date).ToString('o'); Adapters = @($script:Adapters | Where-Object { -not $_.Cached }); Vlan = $vlan
+            Version = 4; Saved = (Get-Date).ToString('o'); Adapters = @($script:Adapters | Where-Object { -not $_.Cached }); Vlan = $vlan
         }) -AsObject
     } catch { }
 }
@@ -2024,7 +2286,7 @@ function Read-InventoryCache {
     try {
         if (-not (Test-Path $script:CachePath)) { return $null }
         $c = [System.IO.File]::ReadAllText($script:CachePath) | ConvertFrom-Json
-        if ($c.Version -ne 3) { return $null }
+        if ($c.Version -ne 4) { return $null }
         $vlan = @{}
         if ($c.Vlan) { foreach ($p in $c.Vlan.PSObject.Properties) { $vlan[$p.Name] = $p.Value } }
         $adapters = @(@($c.Adapters) | Where-Object { $_ -and $_.Name } | ForEach-Object {
@@ -2064,6 +2326,9 @@ $script:FormBaseline  = ''      # form signature right after it was filled from 
 $script:BaselineMask  = ''
 $script:PingHomeAuto  = ''      # gateway last auto-filled into the home ping box
 $script:PingTargetAuto = ''     # same for the adapter page's ping box
+$script:IcsState      = $null   # last Get-IcsState result (internet sharing)
+$script:IcsRefreshing = $false
+$script:IcsEdited     = $false  # user changed the sharing address / persistence - don't overwrite on refresh
 $script:FormDirty     = $false
 $script:Populating    = $false
 $script:ScanRunning   = $false
@@ -2179,6 +2444,7 @@ function Start-InventoryRefresh([switch]$Quiet) {
     if ($script:ScanRunning -or -not $script:ScanPool) { return }
     $script:ScanRunning = $true
     Set-ScanState 'Refreshing...' -Busy
+    if ($script:SelectedIdx) { Start-IcsRefresh }
     Start-WorkJob -Pool $script:ScanPool -Context @{ Quiet = [bool]$Quiet } `
         -Script '[PSCustomObject]@{ Adapters = @(Get-AdapterInventory); Vlan = (Get-VlanInventory) }' `
         -OnDone {
@@ -2215,6 +2481,8 @@ function Update-Inventory($Adapters, $Vlan) {
         if (-not $a) { Show-Home -Force; Set-Status 'That adapter is no longer present.' 'warn'; return }
         Update-AdapterHeader $a
         if (-not $script:FormDirty) { Show-Adapter $a } else { Update-VlanFields $a -KeepText }
+        if ($ctl.pnlIcsSetup.Visibility -eq 'Visible') { Initialize-IcsChoices $a }
+        Update-IcsCard
     }
 }
 
@@ -2286,6 +2554,10 @@ function Open-AdapterPage($a) {
     $ctl.txtPingTarget.Text = $script:PingTargetAuto
     Set-PingResult 'Sends 4 pings and shows the response time. Pre-filled with the gateway - type any target.' 'info'
     Update-AdapterHeader $a
+    $script:IcsEdited = $false
+    Initialize-IcsChoices $a
+    Update-IcsCard
+    Start-IcsRefresh
     Show-Adapter $a
     $ctl.pnlHome.Visibility   = 'Collapsed'
     $ctl.pnlConfig.Visibility = 'Visible'
@@ -2555,6 +2827,7 @@ function Start-ConfigChange {
             }
             Update-UndoButton
             if ($r.After) { Update-Inventory $r.After $null; Save-InventoryCache }
+            Start-IcsRefresh   # an undo may have stopped sharing; any change can affect the shared port
         }
 }
 
@@ -2604,6 +2877,181 @@ function Start-Ping([string]$Target, [switch]$OnPage) {
         }
 }
 
+# ---- internet sharing card ---------------------------------------------
+# The shared port's /24 must not overlap a network the PC is already on (e.g. the Wi-Fi it shares),
+# or traffic would go to the wrong place. Returns the clashing adapter, or $null.
+function Get-IcsConflict([string]$Address, $Adapters, [int]$PrivateIdx) {
+    foreach ($a in @($Adapters)) {
+        if (-not $a -or $a.InterfaceIndex -eq $PrivateIdx -or -not $a.IPv4 -or $null -eq $a.PrefixLength -or "$($a.PrefixLength)" -eq '') { continue }
+        $p = [math]::Min(24, [int]$a.PrefixLength)
+        if ($p -ge 1 -and (Test-SameSubnet $Address $a.IPv4 $p)) { return $a }
+    }
+    return $null
+}
+
+function Get-AdapterByIdx([int]$Idx) {
+    if (-not $Idx) { return $null }
+    $script:Adapters | Where-Object { $_.InterfaceIndex -eq $Idx } | Select-Object -First 1
+}
+
+function Start-IcsRefresh {
+    if ($script:IcsRefreshing -or -not $script:WorkPool) { return }
+    $script:IcsRefreshing = $true
+    Start-WorkJob -Pool $script:WorkPool -Script 'Get-IcsState' -OnDone {
+        param($r, $err)
+        $script:IcsRefreshing = $false
+        $script:IcsState = if ($r) { $r } else { [PSCustomObject]@{ Available = $false; Error = "$err"; PublicIdx = 0; PrivateIdx = 0; ScopeAddress = '192.168.137.1'; Persist = $false; Clients = @() } }
+        Update-IcsCard
+    }
+}
+
+# Fills the two adapter pickers. Keeps the user's choice; otherwise defaults from the page's adapter:
+# an Ethernet port is the natural "share to", the adapter with internet the natural "from".
+function Initialize-IcsChoices($Sel) {
+    $script:Populating = $true
+    try {
+        $online = Get-InternetAdapter
+        $from = @($script:Adapters | Where-Object { $_.Kind -in 'WiFi', 'Ethernet', 'Cellular', 'Virtual' -and $_.Status -eq 'Up' } | Sort-Object Name)
+        $to   = @($script:Adapters | Where-Object { $_.Kind -eq 'Ethernet' } | Sort-Object Name)
+        $prevFrom = if ($ctl.cmbIcsFrom.SelectedItem) { [int]$ctl.cmbIcsFrom.SelectedItem.Tag } else { 0 }
+        $prevTo   = if ($ctl.cmbIcsTo.SelectedItem)   { [int]$ctl.cmbIcsTo.SelectedItem.Tag }   else { 0 }
+
+        $toIdx = if ($prevTo -and ($to | Where-Object { $_.InterfaceIndex -eq $prevTo })) { $prevTo }
+                 elseif ($Sel -and $Sel.Kind -eq 'Ethernet' -and (-not $online -or $Sel.InterfaceIndex -ne $online.InterfaceIndex)) { $Sel.InterfaceIndex }
+                 else { [int]($to | Where-Object { -not $online -or $_.InterfaceIndex -ne $online.InterfaceIndex } | Select-Object -First 1).InterfaceIndex }
+        $fromIdx = if ($prevFrom -and ($from | Where-Object { $_.InterfaceIndex -eq $prevFrom })) { $prevFrom }
+                   elseif ($Sel -and $null -ne $Sel.DefaultRouteMetric -and $Sel.InterfaceIndex -ne $toIdx) { $Sel.InterfaceIndex }
+                   elseif ($online -and $online.InterfaceIndex -ne $toIdx) { $online.InterfaceIndex }
+                   else { [int]($from | Where-Object { $_.InterfaceIndex -ne $toIdx } | Select-Object -First 1).InterfaceIndex }
+
+        foreach ($pair in @(@($ctl.cmbIcsFrom, $from, $fromIdx), @($ctl.cmbIcsTo, $to, $toIdx))) {
+            $combo = $pair[0]
+            $combo.Items.Clear()
+            foreach ($a in $pair[1]) {
+                $it = New-Object System.Windows.Controls.ComboBoxItem
+                $extra = if ($null -ne $a.DefaultRouteMetric) { 'has internet' } else { $a.StatusText.ToLower() }
+                $it.Content = "$($a.Name)   $script:Dot $extra"
+                $it.Tag = [int]$a.InterfaceIndex
+                [System.Windows.Controls.TextSearch]::SetText($it, $a.Name)
+                [void]$combo.Items.Add($it)
+                if ($a.InterfaceIndex -eq $pair[2]) { $combo.SelectedItem = $it }
+            }
+        }
+    } finally { $script:Populating = $false }
+}
+
+function Get-IcsPrivateIdx {
+    $s = $script:IcsState
+    if ($s -and $s.PrivateIdx) { return [int]$s.PrivateIdx }
+    if ($ctl.cmbIcsTo.SelectedItem) { return [int]$ctl.cmbIcsTo.SelectedItem.Tag }
+    return 0
+}
+
+# Validates the address field and explains what Windows will hand out. Returns the address or $null.
+function Update-IcsDhcpInfo {
+    $problem = $null; $addr = $null
+    try {
+        $addr = Assert-IcsScopeAddress $ctl.cmbIcsScope.Text.Trim()
+        $clash = Get-IcsConflict $addr $script:Adapters (Get-IcsPrivateIdx)
+        if ($clash) { $problem = "That network clashes with $($clash.Name) ($($clash.IPv4)/$($clash.PrefixLength)). Pick another address, e.g. 192.168.137.1."; $addr = $null }
+    } catch { $problem = $_.Exception.Message }
+    if ($addr) {
+        $s = Get-SubnetSummary $addr 24
+        $first = if ($s.FirstHost -eq $addr) { ConvertFrom-IPv4Int ((ConvertTo-IPv4Int $addr) + 1) } else { $s.FirstHost }
+        $last  = if ($s.LastHost -eq $addr)  { ConvertFrom-IPv4Int ((ConvertTo-IPv4Int $addr) - 1) } else { $s.LastHost }
+        $ctl.txtIcsDhcpInfo.Text = "Devices get $first - $last, mask 255.255.255.0, with $addr as gateway and DNS. Windows fixes the mask, range and DNS; only this address can be changed."
+    } else {
+        $ctl.txtIcsDhcpInfo.Text = 'Devices get the other addresses of this /24 network, with this PC as gateway and DNS.'
+    }
+    $ctl.txtIcsError.Text = "$problem"
+    $ctl.bdIcsError.Visibility = if ($problem) { 'Visible' } else { 'Collapsed' }
+    return $addr
+}
+
+function Update-IcsCard {
+    $s = $script:IcsState
+    $conv = $script:Converter
+    if (-not $s) {
+        $ctl.txtIcsPill.Text = 'Checking...'; $ctl.elIcsDot.Fill = $conv.ConvertFromString('#9AA0A6')
+        $ctl.btnIcsStart.IsEnabled = $false
+        return
+    }
+    $active = $s.Available -and $s.PublicIdx -and $s.PrivateIdx
+    $pub = Get-AdapterByIdx $s.PublicIdx; $priv = Get-AdapterByIdx $s.PrivateIdx
+
+    $pill = if (-not $s.Available) { @('Unavailable', '#F1F3F4', '#9AA0A6') } elseif ($active) { @('On', '#E6F4EA', '#16A34A') } else { @('Off', '#F1F3F4', '#9AA0A6') }
+    $ctl.txtIcsPill.Text = $pill[0]
+    $ctl.bdIcsPill.Background = $conv.ConvertFromString($pill[1])
+    $ctl.elIcsDot.Fill = $conv.ConvertFromString($pill[2])
+
+    $ctl.pnlIcsSetup.Visibility   = if ($active) { 'Collapsed' } else { 'Visible' }
+    $ctl.pnlIcsActive.Visibility  = if ($active) { 'Visible' } else { 'Collapsed' }
+    $ctl.pnlIcsClients.Visibility = if ($active) { 'Visible' } else { 'Collapsed' }
+    $ctl.btnIcsStop.Visibility    = if ($active) { 'Visible' } else { 'Collapsed' }
+    if ($active) {
+        $ctl.txtIcsFromName.Text  = if ($pub)  { $pub.Name }  else { "interface $($s.PublicIdx)" }
+        $ctl.txtIcsToName.Text    = if ($priv) { $priv.Name } else { "interface $($s.PrivateIdx)" }
+        $ctl.txtIcsFromGlyph.Text = if ($pub)  { $pub.Glyph }  else { [string][char]0xE774 }
+        $ctl.txtIcsToGlyph.Text   = if ($priv) { $priv.Glyph } else { [string][char]0xE839 }
+        $ctl.txtIcsHint.Text = "Windows hands out addresses on $($ctl.txtIcsToName.Text) and sends those devices to the internet through $($ctl.txtIcsFromName.Text)."
+        $ctl.icIcsClients.ItemsSource = @($s.Clients)
+        $ctl.txtIcsNoClients.Visibility = if (@($s.Clients).Count) { 'Collapsed' } else { 'Visible' }
+        $ctl.txtIcsStart.Text = 'Update sharing'; $ctl.txtIcsStartGlyph.Text = [string][char]0xE73E
+    } elseif ($s.Available) {
+        $ctl.txtIcsHint.Text = 'Give devices plugged into one adapter internet from another. Windows then hands out their addresses (DHCP).'
+        $ctl.txtIcsStart.Text = 'Start sharing'; $ctl.txtIcsStartGlyph.Text = [string][char]0xE768
+    } else {
+        $ctl.txtIcsHint.Text = "Not available: $($s.Error)"
+    }
+
+    if (-not $script:IcsEdited) {
+        $script:Populating = $true
+        try { $ctl.cmbIcsScope.Text = $s.ScopeAddress; $ctl.chkIcsPersist.IsChecked = [bool]$s.Persist } finally { $script:Populating = $false }
+    }
+    $addr = Update-IcsDhcpInfo
+    $changed = $addr -and ($addr -ne $s.ScopeAddress -or ($ctl.chkIcsPersist.IsChecked -eq $true) -ne [bool]$s.Persist)
+    $ctl.btnIcsStart.IsEnabled = $s.Available -and [bool]$addr -and ($changed -or -not $active) -and
+                                 ($active -or ($ctl.cmbIcsFrom.SelectedItem -and $ctl.cmbIcsTo.SelectedItem))
+}
+
+function Start-IcsChange([string]$Action, [int]$PublicIdx, [int]$PrivateIdx, [string]$Scope, [bool]$Persist, [string]$Description) {
+    $p = @{ Action = $Action; PublicIdx = $PublicIdx; PrivateIdx = $PrivateIdx; ScopeAddress = $Scope; Persist = $Persist }
+    Start-WorkJob -Pool $script:WorkPool -Params @{ p = $p } -Script 'param($p) Invoke-IcsChange @p' `
+        -BusyLabel "Internet sharing: $Description..." -Context @{ Action = $Action; Description = $Description } -OnDone {
+            param($r, $err, $ctx)
+            if ($err -or -not $r) {
+                Set-Status "Internet sharing: $err" 'err'
+                Start-IcsRefresh
+                return
+            }
+            $script:IcsState = $r.State
+            $script:IcsEdited = $false
+            if (-not $r.Ok) {
+                Write-ChangeLog "FAILED  ICS $($ctx.Description) - $($r.Error)"
+                Set-Status "Internet sharing not changed: $($r.Error)" 'err'
+            } else {
+                Write-ChangeLog "ICS     $($ctx.Description)"
+                if ($ctx.Action -eq 'Start' -and $r.Before) {
+                    # Undo = stop sharing and put the port back exactly as it was.
+                    $before = $r.Before
+                    $before | Add-Member -NotePropertyName UndoIcs -NotePropertyValue $true -Force
+                    $script:UndoSnapshot = $before
+                } elseif ($ctx.Action -eq 'Stop') {
+                    $script:UndoSnapshot = $null
+                }
+                Update-UndoButton
+                $msg = switch ($ctx.Action) {
+                    'Start'  { "Sharing started: $($ctx.Description). Plug the device into the shared port and set it to automatic (DHCP)." }
+                    'Update' { "Sharing updated: $($ctx.Description)." }
+                    default  { 'Sharing stopped. The shared port is back on automatic (DHCP).' }
+                }
+                Set-Status $msg 'ok'
+            }
+            if ($r.After) { Update-Inventory $r.After $null; Save-InventoryCache }
+            Update-IcsCard
+        }
+}
+
 # Pick-or-type lists. Each entry shows a description in the dropdown but puts only the value
 # into the box (TextSearch.Text), so what lands in the field always parses.
 function Initialize-Pickers {
@@ -2630,6 +3078,12 @@ function Initialize-Pickers {
     & $add $ctl.cmbMtu '1400' '1400   VPN / tunnels'
     & $add $ctl.cmbMtu '1280' '1280   minimum safe'
     & $add $ctl.cmbMtu '9000' '9000   jumbo frames'
+    & $add $ctl.cmbIcsScope '192.168.137.1' '192.168.137.1   Windows default'
+    & $add $ctl.cmbIcsScope '192.168.0.1'   '192.168.0.1'
+    & $add $ctl.cmbIcsScope '192.168.1.1'   '192.168.1.1'
+    & $add $ctl.cmbIcsScope '192.168.2.1'   '192.168.2.1'
+    & $add $ctl.cmbIcsScope '10.0.0.1'      '10.0.0.1'
+    & $add $ctl.cmbIcsScope '172.16.0.1'    '172.16.0.1'
 }
 
 # ---------------------------------------------------------------------
@@ -2716,6 +3170,42 @@ $ctl.btnSuggestGw.Add_Click({
         $s = Get-SubnetSummary $ip $p
         $ctl.txtGw.Text = if ($s.FirstHost -ne $ip) { $s.FirstHost } else { $s.LastHost }
     } catch { Set-Status $_.Exception.Message 'err' }
+})
+
+# ---- internet sharing ----
+$ctl.cmbIcsScope.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent,
+    [System.Windows.Controls.TextChangedEventHandler]{ if (-not $script:Populating) { $script:IcsEdited = $true; Update-IcsCard } })
+$ctl.chkIcsPersist.Add_Click({ $script:IcsEdited = $true; Update-IcsCard })
+foreach ($cb in @($ctl.cmbIcsFrom, $ctl.cmbIcsTo)) { $cb.Add_SelectionChanged({ if (-not $script:Populating) { Update-IcsCard } }) }
+$ctl.btnIcsRefresh.Add_Click({ Start-IcsRefresh })
+
+$ctl.btnIcsStart.Add_Click({
+    $s = $script:IcsState
+    if (-not $s -or -not $s.Available) { return }
+    $addr = Update-IcsDhcpInfo
+    if (-not $addr) { Set-Status "Internet sharing: $($ctl.txtIcsError.Text)" 'err'; return }
+    $persist = $ctl.chkIcsPersist.IsChecked -eq $true
+    $keep = if ($persist) { ', kept after restart' } else { '' }
+    if ($s.PublicIdx -and $s.PrivateIdx) {
+        $priv = Get-AdapterByIdx $s.PrivateIdx
+        Start-IcsChange 'Update' 0 0 $addr $persist "address $addr on $($priv.Name)$keep"
+        return
+    }
+    $fromIdx = [int]$ctl.cmbIcsFrom.SelectedItem.Tag; $toIdx = [int]$ctl.cmbIcsTo.SelectedItem.Tag
+    if ($fromIdx -eq $toIdx) { Set-Status 'Internet sharing: pick two different adapters.' 'err'; return }
+    $from = Get-AdapterByIdx $fromIdx; $to = Get-AdapterByIdx $toIdx
+    $noNet = if ($null -eq $from.DefaultRouteMetric) { "`n`nNote: $($from.Name) has no internet connection right now." } else { '' }
+    $text = "Share $($from.Name)'s internet with devices on $($to.Name)?`n`n$($to.Name) will get the address $addr and hand out addresses to devices plugged into it. Its current settings are replaced (Undo puts them back).$noNet"
+    if (-not (Confirm-Action $text 'Start internet sharing')) { return }
+    Start-IcsChange 'Start' $fromIdx $toIdx $addr $persist "$($from.Name) -> $($to.Name), address $addr$keep"
+})
+
+$ctl.btnIcsStop.Add_Click({
+    $s = $script:IcsState
+    $priv = Get-AdapterByIdx $s.PrivateIdx
+    $name = if ($priv) { $priv.Name } else { 'the shared port' }
+    if (-not (Confirm-Action "Stop internet sharing?`n`nDevices on $name lose internet, and $name goes back to automatic (DHCP)." 'Stop internet sharing')) { return }
+    Start-IcsChange 'Stop' 0 0 '' $false "stop (was $($ctl.txtIcsFromName.Text) -> $($ctl.txtIcsToName.Text))"
 })
 
 $ctl.btnRevert.Add_Click({

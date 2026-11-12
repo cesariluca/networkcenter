@@ -31,6 +31,9 @@ Single PowerShell + WPF script: nothing to install beyond what ships with Window
   fresh data loads in the background, about a second later; all network work runs in the
   background so the window never freezes.
 - **Fits any laptop screen** — the window sizes itself to the screen and the laptop view scales down.
+- **Internet sharing** — give devices on one adapter internet from another (e.g. Wi-Fi → Ethernet)
+  with Windows acting as their DHCP server; choose the address Windows uses on the shared port,
+  keep sharing after a restart, and see which devices are connected.
 - **Field tools** — ping (with loss/latency), renew DHCP, flush DNS, clear the ARP cache,
   enable/disable/restart the adapter, copy its configuration for tickets and reports.
 
@@ -106,6 +109,26 @@ while outbound traffic keeps using the primary address.
 
 **Careful:** changing the adapter you're currently connected *through* (e.g. remote desktop over
 that NIC) drops your session — that's Windows, not the app.
+
+### Internet sharing (Windows ICS)
+
+On any adapter page, the **Internet sharing** card (right side) uses Windows' built-in *Internet
+Connection Sharing*: pick where the internet **comes from** (e.g. Wi-Fi) and which port to **share it
+to** (e.g. Ethernet), then **Start sharing**. Windows then acts as DHCP server and DNS proxy on that
+port, so a device plugged into it and set to automatic (DHCP) gets online.
+
+What you can set — and what Windows decides:
+
+| Setting | |
+| --- | --- |
+| Which adapter shares with which | Yours. Windows allows one sharing pair at a time. |
+| This PC's address on the shared port | Yours (default `192.168.137.1`). The app warns if it clashes with a network you're already on. |
+| Keep sharing after a restart | Yours (Windows stops sharing at reboot otherwise). |
+| Mask, address range, DNS, lease time | Fixed by Windows: always a `/24`, devices get the other addresses of it, with the PC as gateway and DNS. |
+
+The card lists the devices seen on the shared port. **Stop sharing** puts the port back on automatic
+(DHCP) — Windows itself would leave it on the sharing address — and **Undo last change** right after
+starting sharing restores the port's previous settings exactly.
 
 ### VLAN IDs
 

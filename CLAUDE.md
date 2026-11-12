@@ -91,6 +91,15 @@ Windows only (Windows 10/11, Windows PowerShell 5.1 — not pwsh; WPF needs 5.1 
      change → automatic rollback to the snapshot on failure → MTU/VLAN as separate best-effort steps
      (failures become warnings) → fresh full inventory. Returns a plain result object.
    - `Invoke-AdapterAction` (enable/disable/restart/renew/flush DNS/clear ARP), `Invoke-PingTest`.
+   - Internet sharing (Windows ICS) via the `HNetCfg.HNetShare` COM API (admin only; non-admin it
+     reports "not available"): `Get-IcsState` (pair as interface indexes, `ScopeAddress`, reboot
+     persistence, neighbor-cache clients), `Invoke-IcsChange` (Start / Update / Stop; indexes only,
+     like the other workers). Windows allows one pair; only `ScopeAddress` (registry, always a /24)
+     and `EnableRebootPersistConnection` are configurable - don't promise more in the UI. A changed
+     address needs a SharedAccess service restart. Stop also sets the private port back to DHCP
+     (Windows leaves it on the static sharing address). Undo after Start uses a snapshot with
+     `UndoIcs = $true`, which makes the Restore transaction disable sharing first.
+     `Assert-IcsScopeAddress` / `Get-IcsConflict` (UI side) validate the address.
    - `$script:WorkerFunctions` — the functions copied into the background runspaces.
    - Profiles (`ConvertTo-NccProfile` normalizes anything loaded/imported), `Write-JsonFileAtomic`
      (temp + move; `-InputObject` keeps 0/1 items an array), the adapter cache
