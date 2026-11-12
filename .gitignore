@@ -1,0 +1,9 @@
+# Local/machine-specific artifacts - not part of the portable project source
+*.lnk
+
+# App data that may hold real site configurations, IPs or MAC addresses - never commit:
+# profiles, profile exports, the adapter cache, the change log and backups.
+*.json
+changes.log*
+*.bak
+*.tmp
