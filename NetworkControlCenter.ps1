@@ -505,15 +505,32 @@ $xaml = @'
         <Trigger Property="IsDragging" Value="True"><Setter TargetName="th" Property="Background" Value="#6B7280"/></Trigger>
       </ControlTemplate.Triggers>
     </ControlTemplate>
+    <!-- Invisible track halves: clicking above/below the thumb pages up/down -->
+    <Style x:Key="ScrollPage" TargetType="RepeatButton">
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="IsTabStop" Value="False"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
     <Style TargetType="ScrollBar">
-      <Setter Property="Width" Value="10"/>
-      <Setter Property="MinWidth" Value="10"/>
+      <Setter Property="Width" Value="14"/>
+      <Setter Property="MinWidth" Value="14"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ScrollBar">
-            <Track x:Name="PART_Track" IsDirectionReversed="True">
-              <Track.Thumb><Thumb Template="{StaticResource ThumbTemplate}" Width="6" Margin="0,3"/></Track.Thumb>
-            </Track>
+            <Grid Background="Transparent">
+              <Track x:Name="PART_Track" IsDirectionReversed="True">
+                <Track.DecreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPage}" Command="ScrollBar.PageUpCommand"/></Track.DecreaseRepeatButton>
+                <Track.IncreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPage}" Command="ScrollBar.PageDownCommand"/></Track.IncreaseRepeatButton>
+                <Track.Thumb><Thumb x:Name="thumb" Template="{StaticResource ThumbTemplate}" Width="6" Margin="0,3"/></Track.Thumb>
+              </Track>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="thumb" Property="Width" Value="9"/></Trigger>
+            </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
@@ -521,13 +538,20 @@ $xaml = @'
         <Trigger Property="Orientation" Value="Horizontal">
           <Setter Property="Width" Value="Auto"/>
           <Setter Property="MinWidth" Value="0"/>
-          <Setter Property="Height" Value="10"/>
+          <Setter Property="Height" Value="14"/>
           <Setter Property="Template">
             <Setter.Value>
               <ControlTemplate TargetType="ScrollBar">
-                <Track x:Name="PART_Track">
-                  <Track.Thumb><Thumb Template="{StaticResource ThumbTemplate}" Height="6" Margin="3,0"/></Track.Thumb>
-                </Track>
+                <Grid Background="Transparent">
+                  <Track x:Name="PART_Track">
+                    <Track.DecreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPage}" Command="ScrollBar.PageLeftCommand"/></Track.DecreaseRepeatButton>
+                    <Track.IncreaseRepeatButton><RepeatButton Style="{StaticResource ScrollPage}" Command="ScrollBar.PageRightCommand"/></Track.IncreaseRepeatButton>
+                    <Track.Thumb><Thumb x:Name="thumb" Template="{StaticResource ThumbTemplate}" Height="6" Margin="3,0"/></Track.Thumb>
+                  </Track>
+                </Grid>
+                <ControlTemplate.Triggers>
+                  <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="thumb" Property="Height" Value="9"/></Trigger>
+                </ControlTemplate.Triggers>
               </ControlTemplate>
             </Setter.Value>
           </Setter>
@@ -1130,7 +1154,7 @@ $xaml = @'
         </ScrollViewer>
 
         <!-- ===== Side: advanced settings + details (less used) ===== -->
-        <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer x:Name="svSide" Grid.Column="2" VerticalScrollBarVisibility="Auto">
           <StackPanel>
             <Border Style="{StaticResource Card}">
               <StackPanel>
@@ -1379,7 +1403,7 @@ $controlNames = @(
     'bdIcs','bdIcsPill','elIcsDot','txtIcsPill','txtIcsHint','pnlIcsSetup','cmbIcsFrom','cmbIcsTo','pnlIcsActive',
     'txtIcsFromGlyph','txtIcsFromName','txtIcsToGlyph','txtIcsToName','cmbIcsScope','txtIcsDhcpInfo','chkIcsPersist',
     'bdIcsError','txtIcsError','btnIcsStart','txtIcsStartGlyph','txtIcsStart','btnIcsStop','pnlIcsClients',
-    'btnIcsRefresh','icIcsClients','txtIcsNoClients',
+    'btnIcsRefresh','icIcsClients','txtIcsNoClients','svSide',
     'pnlHome','icWired','txtNoWired','icWireless','txtNoWireless','pnlVirtual','icVirtual',
     'txtHostName','txtOnline','pnlHomeTools','txtPingHome','btnPingHome','btnFlushDns','btnClearArp','btnOpenData',
     'pnlConfig','btnBack','bdAdapterIcon','txtAdapterGlyph','txtAdapterName','bdStatusPill','elStatusDot',
@@ -2425,6 +2449,64 @@ function Confirm-Action([string]$Text, [string]$Title = 'Network Control Center'
     return ($r -eq [System.Windows.MessageBoxResult]::Yes)
 }
 
+# ---- smooth wheel scrolling ---------------------------------------------
+# WPF's default wheel handling jumps 48 px per notch, and lets whatever is under the cursor take
+# the wheel: a focused combo box then *changes its value* instead of the page scrolling. The page's
+# ScrollViewers take the wheel first (PreviewMouseWheel) and ease toward a target offset instead.
+# Only a nested scroll area that can still scroll in that direction (e.g. a long additional-IPs
+# list) or an open drop-down keeps the wheel.
+$script:SmoothTargets = @{}   # ScrollViewer -> target vertical offset
+$script:SmoothTimer   = $null
+$script:SmoothLastSet = @{}   # ScrollViewer -> offset the animation set last (to recognise its own ScrollChanged)
+
+function Enable-SmoothScroll($Viewer) {
+    if (-not $script:SmoothTimer) {
+        $script:SmoothTimer = New-Object System.Windows.Threading.DispatcherTimer([System.Windows.Threading.DispatcherPriority]::Render)
+        $script:SmoothTimer.Interval = [TimeSpan]::FromMilliseconds(10)
+        $script:SmoothTimer.Add_Tick({ Step-SmoothScroll })
+    }
+    $Viewer.Add_PreviewMouseWheel({ param($sender, $e) Invoke-SmoothWheel $sender $e })
+    # Dragging the scrollbar or paging must not be fought by a pending wheel animation. ScrollChanged
+    # arrives after layout, so compare with the offset the animation itself last set: anything else
+    # was moved by the user (or by code such as ScrollToTop) and cancels the animation.
+    $Viewer.Add_ScrollChanged({ param($sender, $e)
+        if ($e.VerticalChange -ne 0 -and $script:SmoothTargets.ContainsKey($sender) -and
+            (-not $script:SmoothLastSet.ContainsKey($sender) -or [math]::Abs($e.VerticalOffset - $script:SmoothLastSet[$sender]) -gt 1)) {
+            $script:SmoothTargets.Remove($sender)
+            $script:SmoothLastSet.Remove($sender)
+        }
+    })
+}
+
+function Invoke-SmoothWheel($Viewer, $e) {
+    $node = $e.OriginalSource
+    while ($node -and $node -ne $Viewer) {
+        if ($node -is [System.Windows.Controls.ComboBox] -and $node.IsDropDownOpen) { return }
+        if ($node -is [System.Windows.Controls.ScrollViewer] -and $node.ScrollableHeight -gt 0 -and
+            (($e.Delta -gt 0 -and $node.VerticalOffset -gt 0) -or ($e.Delta -lt 0 -and $node.VerticalOffset -lt $node.ScrollableHeight))) { return }
+        $node = if ($node -is [System.Windows.Media.Visual]) { [System.Windows.Media.VisualTreeHelper]::GetParent($node) }
+                else { [System.Windows.LogicalTreeHelper]::GetParent($node) }
+    }
+    $e.Handled = $true
+    if ($Viewer.ScrollableHeight -le 0) { return }
+    # Successive notches add up to the pending target, so fast spins don't stutter.
+    $from = if ($script:SmoothTargets.ContainsKey($Viewer)) { $script:SmoothTargets[$Viewer] } else { $Viewer.VerticalOffset }
+    $script:SmoothTargets[$Viewer] = [math]::Max(0, [math]::Min($Viewer.ScrollableHeight, $from - $e.Delta * 0.9))
+    if (-not $script:SmoothTimer.IsEnabled) { $script:SmoothTimer.Start() }
+}
+
+function Step-SmoothScroll {
+    foreach ($v in @($script:SmoothTargets.Keys)) {
+        $target = [math]::Min($script:SmoothTargets[$v], $v.ScrollableHeight)
+        $diff = $target - $v.VerticalOffset
+        $next = if ([math]::Abs($diff) -lt 0.5) { $target } else { $v.VerticalOffset + $diff * 0.22 }   # ease-out
+        $script:SmoothLastSet[$v] = $next
+        $v.ScrollToVerticalOffset($next)
+        if ($next -eq $target) { $script:SmoothTargets.Remove($v); $script:SmoothLastSet.Remove($v) }
+    }
+    if ($script:SmoothTargets.Count -eq 0) { $script:SmoothTimer.Stop() }
+}
+
 function Invoke-ButtonClick($b) {
     $b.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent)))
 }
@@ -3466,6 +3548,8 @@ $window.Add_Closing({
 # create the background runspaces and start the live scan.
 Initialize-Pickers
 Update-UndoButton
+Enable-SmoothScroll $ctl.svForm
+Enable-SmoothScroll $ctl.svSide
 
 # Fit the window into the screen's work area (excludes the taskbar). Laptop screens at 125-175%
 # scaling are often well under 760 px tall, which would otherwise cut the window off.
